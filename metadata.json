@@ -1,0 +1,6 @@
+{
+  "name": "Epos",
+  "description": "Ultra-lightweight offline e-book reader for EPUB, PDF, and TXT with realistic 2D canvas page-curl physics, multi-language translation, word bank flashcards, and procedural paper acoustics.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

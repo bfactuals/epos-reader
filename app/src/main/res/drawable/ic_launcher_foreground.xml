@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- 5 slender, gently tapered fanned pages rising from curved center spine with softly fading opacity -->
+    <!-- Page 1 (leftmost, 98% opacity) -->
+    <path
+        android:fillColor="#FAF7F5F0"
+        android:pathData="M52.6,73.2 Q41.5,58.5 32.0,45.0 Q43.8,56.5 55.2,71.2 Z" />
+
+    <!-- Page 2 (82% opacity) -->
+    <path
+        android:fillColor="#D1F7F5F0"
+        android:pathData="M52.5,73.0 Q46.2,54.0 41.2,37.8 Q49.5,53.2 55.4,72.0 Z" />
+
+    <!-- Page 3 (center, 65% opacity) -->
+    <path
+        android:fillColor="#A6F7F5F0"
+        android:pathData="M52.4,73.0 Q52.6,52.0 54.0,34.2 Q55.4,52.0 55.6,73.0 Z" />
+
+    <!-- Page 4 (47% opacity) -->
+    <path
+        android:fillColor="#78F7F5F0"
+        android:pathData="M52.6,72.0 Q58.5,53.2 66.8,37.8 Q61.8,54.0 55.5,73.0 Z" />
+
+    <!-- Page 5 (rightmost, 30% opacity) -->
+    <path
+        android:fillColor="#4DF7F5F0"
+        android:pathData="M52.8,71.2 Q64.2,56.5 76.0,45.0 Q66.5,58.5 55.4,73.2 Z" />
+
+    <!-- Open-book base with curved center spine (#F7F5F0) -->
+    <path
+        android:pathData="M29.0,70.0 Q41.5,64.8 54.0,74.2 Q66.5,64.8 79.0,70.0"
+        android:strokeWidth="4.2"
+        android:strokeColor="#F7F5F0"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+</vector>
