@@ -213,6 +213,23 @@ fun LibraryScreen(
         }
     }
 
+    // Zero-permission SAF launchers for Offline JSON Backup & Restore
+    val exportBackupLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/json")
+    ) { uri ->
+        if (uri != null) {
+            viewModel.exportBackupToUri(context, uri)
+        }
+    }
+
+    val importBackupLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            viewModel.importBackupFromUri(context, uri)
+        }
+    }
+
     fun launchDocumentPicker(intoVault: Boolean) {
         importIntoVault = intoVault
         importLauncher.launch(
@@ -676,7 +693,7 @@ fun LibraryScreen(
         }
     }
 
-    // 1. Settings & About Sheet (Remote GitHub Config, Update Pill, Theme, Grid Size, Verified Secret Code, Full-Page Translate, Gemini Key)
+    // 1. Settings & About Sheet (Remote GitHub Config, Update Pill, Theme, Grid Size, Volume Turn, Verified Secret Code, Translate, Backup)
     if (showSettingsAboutSheet) {
         SettingsAndAboutSheet(
             settings = settings,
@@ -684,7 +701,10 @@ fun LibraryScreen(
             hasSecretCode = hasSecretCode,
             onSelectTheme = { mode -> viewModel.setThemeMode(mode) },
             onSelectGridColumns = { cols -> viewModel.setShelfGridColumns(cols) },
+            onToggleVolumeButtons = { enabled -> viewModel.setVolumeButtonsTurnPages(enabled) },
             onToggleFullPageTranslate = { enabled -> viewModel.setFullPageTranslateEnabled(enabled) },
+            onExportBackup = { exportBackupLauncher.launch("epos_backup.json") },
+            onImportBackup = { importBackupLauncher.launch(arrayOf("application/json", "text/plain", "*/*")) },
             onCreateSecretCode = { newCode, confirm -> viewModel.createSecretShelfCode(newCode, confirm) },
             onChangeSecretCode = { current, newCode, confirm -> viewModel.changeSecretShelfCode(current, newCode, confirm) },
             onRemoveSecretCode = { current -> viewModel.removeSecretShelfCode(current) },

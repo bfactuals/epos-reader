@@ -37,6 +37,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalViewConfiguration
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.IntSize
+import com.example.data.model.PageTurnStyle
 import com.example.ui.theme.FolioPalette
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -95,6 +96,10 @@ fun PageCurlCanvas(
     secretLineRects: List<RectF> = emptyList(),
     secretLineFrostAlpha: Float = 0f,
     onRubSecretLine: () -> Unit = {},
+    pageTurnStyle: PageTurnStyle = PageTurnStyle.CURL,
+    externalTurnTrigger: Pair<Int, Int> = 0 to 0,
+    bottomInsetPx: Int = 0,
+    onFooterTap: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val density = LocalDensity.current.density
@@ -145,6 +150,9 @@ fun PageCurlCanvas(
     val latestSecretRects by rememberUpdatedState(secretLineRects)
     val latestSecretFrost by rememberUpdatedState(secretLineFrostAlpha)
     val latestOnRubSecret by rememberUpdatedState(onRubSecretLine)
+    val latestTurnStyle by rememberUpdatedState(pageTurnStyle)
+    val latestBottomInsetPx by rememberUpdatedState(bottomInsetPx)
+    val latestOnFooterTap by rememberUpdatedState(onFooterTap)
 
     // Reusable native Paint & Path objects (zero per-frame GC allocations)
     val drawResources = remember { CurlDrawResources() }
@@ -225,10 +233,23 @@ fun PageCurlCanvas(
         if (forward && latestCurrentPage >= latestTotalPages - 1) return
         if (!forward && latestCurrentPage <= 0) return
 
+        // Instant style: commit immediately with zero animation
+        if (latestTurnStyle == PageTurnStyle.INSTANT) {
+            lastCommitUptimeMs = nowMs
+            latestOnRustle(0.65f)
+            latestOnCommit(if (forward) 1 else -1)
+            latestOnHaptic()
+            return
+        }
+
         direction = if (forward) CurlDirection.FORWARD else CurlDirection.BACKWARD
         originMode = CurlOriginMode.BOTTOM_CORNER
-        isTapPeelArc = true
-        animDurationMs = (400f - latestStiffness * 85f).coerceIn(280f, 420f)
+        isTapPeelArc = latestTurnStyle == PageTurnStyle.CURL
+        animDurationMs = when (latestTurnStyle) {
+            PageTurnStyle.SLIDE -> 220f
+            PageTurnStyle.FADE -> 210f
+            else -> (380f - latestStiffness * 80f).coerceIn(260f, 400f)
+        }
 
         if (forward) {
             animStartX = w * 0.96f
@@ -251,6 +272,14 @@ fun PageCurlCanvas(
     LaunchedEffect(autoFlipTrigger) {
         if (autoFlipTrigger > 0 && animPhase == AnimPhase.IDLE) {
             startTapFlip(forward = true)
+        }
+    }
+
+    // Hardware volume-key page turn trigger
+    LaunchedEffect(externalTurnTrigger.first) {
+        val (triggerId, delta) = externalTurnTrigger
+        if (triggerId > 0 && delta != 0 && animPhase == AnimPhase.IDLE) {
+            startTapFlip(forward = delta > 0)
         }
     }
 
@@ -392,42 +421,62 @@ fun PageCurlCanvas(
                                         if (!rustlePlayed) {
                                             latestOnRustle(speedNorm)
                                         }
-                                        animDurationMs = (310f - speedNorm * 85f).coerceIn(170f, 340f)
-                                        if (direction == CurlDirection.FORWARD) {
-                                            animTargetX = -w * 0.04f
-                                            animTargetY = when (originMode) {
-                                                CurlOriginMode.TOP_CORNER -> h * 0.14f
-                                                CurlOriginMode.BOTTOM_CORNER -> h * 0.86f
-                                                CurlOriginMode.MIDDLE_EDGE -> h * 0.5f
+                                        if (latestTurnStyle == PageTurnStyle.INSTANT) {
+                                            val nowMs = android.os.SystemClock.uptimeMillis()
+                                            if (nowMs - lastCommitUptimeMs >= 180L) {
+                                                lastCommitUptimeMs = nowMs
+                                                latestOnCommit(if (direction == CurlDirection.FORWARD) 1 else -1)
+                                                latestOnHaptic()
                                             }
+                                            animPhase = AnimPhase.IDLE
+                                            direction = CurlDirection.NONE
                                         } else {
-                                            animTargetX = w * 1.02f
-                                            animTargetY = when (originMode) {
-                                                CurlOriginMode.TOP_CORNER -> h * 0.08f
-                                                CurlOriginMode.BOTTOM_CORNER -> h * 0.92f
-                                                CurlOriginMode.MIDDLE_EDGE -> h * 0.5f
+                                            animDurationMs = when (latestTurnStyle) {
+                                                PageTurnStyle.SLIDE -> (200f - speedNorm * 45f).coerceIn(120f, 210f)
+                                                PageTurnStyle.FADE -> (200f - speedNorm * 40f).coerceIn(130f, 210f)
+                                                else -> (300f - speedNorm * 80f).coerceIn(165f, 330f)
                                             }
+                                            if (direction == CurlDirection.FORWARD) {
+                                                animTargetX = -w * 0.04f
+                                                animTargetY = when (originMode) {
+                                                    CurlOriginMode.TOP_CORNER -> h * 0.14f
+                                                    CurlOriginMode.BOTTOM_CORNER -> h * 0.86f
+                                                    CurlOriginMode.MIDDLE_EDGE -> h * 0.5f
+                                                }
+                                            } else {
+                                                animTargetX = w * 1.02f
+                                                animTargetY = when (originMode) {
+                                                    CurlOriginMode.TOP_CORNER -> h * 0.08f
+                                                    CurlOriginMode.BOTTOM_CORNER -> h * 0.92f
+                                                    CurlOriginMode.MIDDLE_EDGE -> h * 0.5f
+                                                }
+                                            }
+                                            animPhase = AnimPhase.COMPLETING
                                         }
-                                        animPhase = AnimPhase.COMPLETING
                                     } else {
                                         // Smooth tactile spring-back when released < 35%
-                                        animDurationMs = (320f - latestStiffness * 70f).coerceIn(210f, 350f)
-                                        if (direction == CurlDirection.FORWARD) {
-                                            animTargetX = w * 1.01f
-                                            animTargetY = when (originMode) {
-                                                CurlOriginMode.TOP_CORNER -> 0f
-                                                CurlOriginMode.BOTTOM_CORNER -> h
-                                                CurlOriginMode.MIDDLE_EDGE -> h * 0.5f
-                                            }
+                                        if (latestTurnStyle == PageTurnStyle.INSTANT) {
+                                            animPhase = AnimPhase.IDLE
+                                            direction = CurlDirection.NONE
                                         } else {
-                                            animTargetX = -w * 0.03f
-                                            animTargetY = when (originMode) {
-                                                CurlOriginMode.TOP_CORNER -> h * 0.12f
-                                                CurlOriginMode.BOTTOM_CORNER -> h * 0.88f
-                                                CurlOriginMode.MIDDLE_EDGE -> h * 0.5f
+                                            animDurationMs = (300f - latestStiffness * 70f).coerceIn(190f, 330f)
+                                            if (direction == CurlDirection.FORWARD) {
+                                                animTargetX = w * 1.01f
+                                                animTargetY = when (originMode) {
+                                                    CurlOriginMode.TOP_CORNER -> 0f
+                                                    CurlOriginMode.BOTTOM_CORNER -> h
+                                                    CurlOriginMode.MIDDLE_EDGE -> h * 0.5f
+                                                }
+                                            } else {
+                                                animTargetX = -w * 0.03f
+                                                animTargetY = when (originMode) {
+                                                    CurlOriginMode.TOP_CORNER -> h * 0.12f
+                                                    CurlOriginMode.BOTTOM_CORNER -> h * 0.88f
+                                                    CurlOriginMode.MIDDLE_EDGE -> h * 0.5f
+                                                }
                                             }
+                                            animPhase = AnimPhase.SPRINGING_BACK
                                         }
-                                        animPhase = AnimPhase.SPRINGING_BACK
                                     }
                                 } else if (!longPressTriggered) {
                                     // Tap handling on resting page
@@ -436,8 +485,13 @@ fun PageCurlCanvas(
                                             startPos.x >= r.left - 14f && startPos.x <= r.right + 14f &&
                                                 startPos.y >= r.top - 14f && startPos.y <= r.bottom + 14f
                                         }
+                                    val footerTop = h - latestBottomInsetPx - 42f * density
+                                    val tappedFooter = startPos.y >= footerTop &&
+                                        startPos.x in (w * 0.15f)..(w * 0.85f)
                                     if (tappedFrost) {
                                         latestOnRubSecret()
+                                    } else if (tappedFooter && latestSelection == null) {
+                                        latestOnFooterTap()
                                     } else {
                                         val consumedBySelectionOrHighlight = latestOnRestingTap(startPos)
                                         if (!consumedBySelectionOrHighlight) {
@@ -631,22 +685,58 @@ fun PageCurlCanvas(
                     res = drawResources
                 )
             } else {
-                // Active 60fps 2D Conical/Cylindrical Page Curl!
-                drawConicalPageCurl(
-                    canvas = canvas,
-                    w = w,
-                    h = h,
-                    frontBmp = frontBmp,
-                    underBmp = underBmp,
-                    fingerX = fingerX,
-                    fingerY = fingerY,
-                    originMode = originMode,
-                    stiffness = pageStiffness,
-                    palette = palette,
-                    density = density,
-                    progressFraction = progressFrac,
-                    res = drawResources
-                )
+                when (pageTurnStyle) {
+                    PageTurnStyle.SLIDE -> {
+                        drawSlidePageTurn(
+                            canvas = canvas,
+                            w = w,
+                            h = h,
+                            frontBmp = frontBmp,
+                            underBmp = underBmp,
+                            fingerX = fingerX,
+                            palette = palette,
+                            density = density,
+                            progressFraction = progressFrac,
+                            res = drawResources
+                        )
+                    }
+                    PageTurnStyle.FADE -> {
+                        drawFadePageTurn(
+                            canvas = canvas,
+                            w = w,
+                            h = h,
+                            frontBmp = frontBmp,
+                            underBmp = underBmp,
+                            fingerX = fingerX,
+                            palette = palette,
+                            density = density,
+                            progressFraction = progressFrac,
+                            res = drawResources
+                        )
+                    }
+                    PageTurnStyle.INSTANT -> {
+                        canvas.drawBitmap(frontBmp, 0f, 0f, null)
+                        drawSpineShadowAndPageStack(canvas, w, h, progressFrac, palette, density, drawResources)
+                    }
+                    else -> {
+                        // Active 60fps 2D Conical Page Curl (clean natural corner fold, zero stripe glitch)
+                        drawConicalPageCurl(
+                            canvas = canvas,
+                            w = w,
+                            h = h,
+                            frontBmp = frontBmp,
+                            underBmp = underBmp,
+                            fingerX = fingerX,
+                            fingerY = fingerY,
+                            originMode = originMode,
+                            stiffness = pageStiffness,
+                            palette = palette,
+                            density = density,
+                            progressFraction = progressFrac,
+                            res = drawResources
+                        )
+                    }
+                }
             }
         }
     }
@@ -802,32 +892,31 @@ private fun drawConicalPageCurl(
     }
     canvas.drawBitmap(frontBmp, 0f, 0f, res.bitmapPaint)
 
-    // Soft cast shadow from the curled flap onto the flat front page beneath it
-    val flapShadowReach = (maxExtent * 1.12f + 22f * density * elevation).coerceAtLeast(18f * density)
-    val frontShadowAlpha = if (isDark) (110 * elevation).toInt() else (68 * elevation).toInt()
+    // Subtle soft ambient shadow directly underneath the curled corner flap (no harsh stripe)
+    val flapShadowReach = (16f * density + maxExtent * 0.24f).coerceIn(14f * density, 54f * density)
+    val frontShadowAlpha = if (isDark) (44 * elevation).toInt() else (32 * elevation).toInt()
     res.shadowPaint.shader = LinearGradient(
         mx, my,
         mx - nx * flapShadowReach, my - ny * flapShadowReach,
         intArrayOf(
             android.graphics.Color.argb(frontShadowAlpha, 0, 0, 0),
-            android.graphics.Color.argb((frontShadowAlpha * 0.45f).toInt(), 0, 0, 0),
             android.graphics.Color.TRANSPARENT
         ),
-        floatArrayOf(0f, 0.55f, 1f),
+        floatArrayOf(0f, 1f),
         Shader.TileMode.CLAMP
     )
-    canvas.drawRect(0f, 0f, w, h, res.shadowPaint)
+    canvas.drawPath(res.frontClipPath, res.shadowPaint)
     canvas.restore()
 
-    // --- LAYER 2: Revealed Under-Page (Next Page) + Elevation-Aware Drop Shadow ---
+    // --- LAYER 2: Revealed Under-Page (Next Page) + Smooth Natural Corner-Fold Shadow ---
     canvas.save()
     canvas.clipPath(res.peeledPath)
     canvas.drawBitmap(underBmp, 0f, 0f, res.bitmapPaint)
 
-    val dropShadowWidth = ((22f + 68f * elevation) * density * (1.15f - stiffness * 0.25f))
-        .coerceIn(14f * density, w * 0.42f)
-    val dropAlphaStrong = if (isDark) (165 * elevation).toInt() else (115 * elevation).toInt()
-    val dropAlphaMid = (dropAlphaStrong * 0.42f).toInt()
+    val dropShadowWidth = ((18f + 44f * elevation) * density * (1.10f - stiffness * 0.20f))
+        .coerceIn(14f * density, w * 0.30f)
+    val dropAlphaStrong = if (isDark) (110 * elevation).toInt() else (76 * elevation).toInt()
+    val dropAlphaMid = (dropAlphaStrong * 0.36f).toInt()
     res.shadowPaint.shader = LinearGradient(
         mx, my,
         mx + nx * dropShadowWidth, my + ny * dropShadowWidth,
@@ -836,13 +925,13 @@ private fun drawConicalPageCurl(
             android.graphics.Color.argb(dropAlphaMid, 0, 0, 0),
             android.graphics.Color.TRANSPARENT
         ),
-        floatArrayOf(0f, 0.34f, 1f),
+        floatArrayOf(0f, 0.38f, 1f),
         Shader.TileMode.CLAMP
     )
     canvas.drawPath(res.peeledPath, res.shadowPaint)
     canvas.restore()
 
-    // --- LAYER 3: Curled Backside of Turning Page (Subtle 10-11% Ghosting + Clean Paper Veil + Fold Ridge) ---
+    // --- LAYER 3: Curled Backside of Turning Page (Clean 10% Ghosting + Soft Natural Fold Shading) ---
     canvas.save()
     canvas.clipPath(res.backPath)
 
@@ -851,7 +940,7 @@ private fun drawConicalPageCurl(
     res.backPaperPaint.alpha = 255
     canvas.drawPath(res.backPath, res.backPaperPaint)
 
-    // 3b. Back-of-Page Ghosting: exact 2D reflection of frontBmp across fold line L at subtle ~10.5% opacity
+    // 3b. Back-of-Page Ghosting: exact 2D reflection of frontBmp across fold line L at subtle 10% opacity
     val m00 = 1f - 2f * nx * nx
     val m01 = -2f * nx * ny
     val m02 = 2f * mDotN * nx
@@ -867,53 +956,42 @@ private fun drawConicalPageCurl(
     )
     canvas.save()
     canvas.concat(res.reflectMatrix)
-    res.ghostPaint.alpha = if (isDark) 26 else 28 // subtle ~10-11% ink bleed-through
+    res.ghostPaint.alpha = 25 // ~9.8% opacity subtle mirrored ink bleed-through
     canvas.drawBitmap(frontBmp, 0f, 0f, res.ghostPaint)
     canvas.restore()
 
-    // Soft paper-tinted backing veil to diffuse reflected dark text cleanly in both Paper & Night modes
+    // Soft paper-tinted veil to keep mirrored text faint and non-clashing in Light, Night & AMOLED modes
     res.backPaperPaint.color = palette.pageBackside.toArgb()
-    res.backPaperPaint.alpha = if (isDark) 62 else 54
+    res.backPaperPaint.alpha = if (isDark) 84 else 70
     canvas.drawPath(res.backPath, res.backPaperPaint)
     res.backPaperPaint.alpha = 255
 
-    // 3c. Cylindrical Shading + Soft Specular Highlight along the curved fold ridge
-    // Cylinder width scales with page stiffness (stiffer paper = broader smooth curve)
-    val cylSpan = (maxExtent * (0.85f + stiffness * 0.25f)).coerceAtLeast(24f * density)
-    val highlightColor = if (isDark) {
-        android.graphics.Color.argb((34 * elevation).toInt().coerceIn(8, 38), 235, 232, 224)
-    } else {
-        android.graphics.Color.argb((120 * elevation).toInt().coerceIn(30, 128), 255, 253, 248)
-    }
-    val troughShadow = android.graphics.Color.argb(
-        if (isDark) (95 * elevation).toInt() else (62 * elevation).toInt(),
+    // 3c. Smooth organic crease gradient (no banded vertical cylinder stripe)
+    val foldShadeSpan = (maxExtent * 0.55f).coerceIn(18f * density, w * 0.45f)
+    val creaseDark = android.graphics.Color.argb(
+        if (isDark) (54 * elevation).toInt() else (36 * elevation).toInt(),
         0, 0, 0
     )
-    val bodyShade = android.graphics.Color.argb(
-        if (isDark) 34 else 26,
+    val softMid = android.graphics.Color.argb(
+        if (isDark) (16 * elevation).toInt() else (10 * elevation).toInt(),
         0, 0, 0
     )
-    val edgeShade = android.graphics.Color.argb(
-        if (isDark) 52 else 42,
-        0, 0, 0
-    )
-
     res.shadePaint.shader = LinearGradient(
         mx, my,
-        mx - nx * cylSpan, my - ny * cylSpan,
-        intArrayOf(troughShadow, highlightColor, android.graphics.Color.TRANSPARENT, bodyShade, edgeShade),
-        floatArrayOf(0f, 0.14f, 0.36f, 0.72f, 1f),
+        mx - nx * foldShadeSpan, my - ny * foldShadeSpan,
+        intArrayOf(creaseDark, softMid, android.graphics.Color.TRANSPARENT),
+        floatArrayOf(0f, 0.35f, 1f),
         Shader.TileMode.CLAMP
     )
     canvas.drawPath(res.backPath, res.shadePaint)
 
-    // Subtle crisp paper-edge rim line on the curled flap
+    // Subtle crisp paper-edge hairline on the curled flap
     res.overlayPaint.style = Paint.Style.STROKE
-    res.overlayPaint.strokeWidth = 0.8f * density
+    res.overlayPaint.strokeWidth = 0.75f * density
     res.overlayPaint.color = if (isDark) {
-        android.graphics.Color.argb(38, 212, 210, 204)
+        android.graphics.Color.argb(30, 212, 210, 204)
     } else {
-        android.graphics.Color.argb(42, 43, 33, 24)
+        android.graphics.Color.argb(32, 43, 33, 24)
     }
     canvas.drawPath(res.backPath, res.overlayPaint)
     res.overlayPaint.style = Paint.Style.FILL
@@ -929,6 +1007,71 @@ private fun drawConicalPageCurl(
         density = density,
         res = res
     )
+}
+
+private fun drawSlidePageTurn(
+    canvas: android.graphics.Canvas,
+    w: Float,
+    h: Float,
+    frontBmp: Bitmap,
+    underBmp: Bitmap,
+    fingerX: Float,
+    palette: FolioPalette,
+    density: Float,
+    progressFraction: Float,
+    res: CurlDrawResources
+) {
+    val splitX = fingerX.coerceIn(0f, w)
+    val slideOffset = splitX - w
+
+    // Under page rests cleanly underneath
+    canvas.drawBitmap(underBmp, 0f, 0f, res.bitmapPaint)
+
+    // Front page slides smoothly left/right across the viewport
+    canvas.save()
+    canvas.translate(slideOffset, 0f)
+    canvas.drawBitmap(frontBmp, 0f, 0f, res.bitmapPaint)
+    canvas.restore()
+
+    // Crisp subtle drop shadow cast along the trailing edge of the sliding page
+    val shadowW = 14f * density
+    val shadowAlpha = if (palette.isDark) 85 else 54
+    res.shadowPaint.shader = LinearGradient(
+        splitX, 0f,
+        splitX + shadowW, 0f,
+        intArrayOf(
+            android.graphics.Color.argb(shadowAlpha, 0, 0, 0),
+            android.graphics.Color.TRANSPARENT
+        ),
+        floatArrayOf(0f, 1f),
+        Shader.TileMode.CLAMP
+    )
+    canvas.drawRect(splitX, 0f, (splitX + shadowW).coerceAtMost(w), h, res.shadowPaint)
+
+    drawSpineShadowAndPageStack(canvas, w, h, progressFraction, palette, density, res)
+}
+
+private fun drawFadePageTurn(
+    canvas: android.graphics.Canvas,
+    w: Float,
+    h: Float,
+    frontBmp: Bitmap,
+    underBmp: Bitmap,
+    fingerX: Float,
+    palette: FolioPalette,
+    density: Float,
+    progressFraction: Float,
+    res: CurlDrawResources
+) {
+    val turnProgress = ((w - fingerX) / w).coerceIn(0f, 1f)
+    canvas.drawBitmap(underBmp, 0f, 0f, res.bitmapPaint)
+
+    val frontAlpha = ((1f - turnProgress) * 255f).toInt().coerceIn(0, 255)
+    res.bitmapPaint.alpha = frontAlpha
+    canvas.drawBitmap(frontBmp, 0f, 0f, res.bitmapPaint)
+    res.bitmapPaint.alpha = 255
+
+    drawSpineShadowAndPageStack(canvas, w, h, progressFraction, palette, density, res)
 }
 
 private fun drawSpineShadowAndPageStack(

@@ -1,5 +1,6 @@
 package com.example.ui.viewmodel
 
+import android.content.Context
 import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
@@ -16,6 +17,7 @@ import com.example.data.model.TranslationLanguage
 import com.example.data.repository.LibraryRepository
 import com.example.engine.config.RemoteConfigService
 import com.example.ui.theme.ReaderThemeMode
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -24,6 +26,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class LibraryViewModel(
     private val repository: LibraryRepository,
@@ -305,8 +308,59 @@ class LibraryViewModel(
         _statusMessage.value = if (key.isBlank()) "Cleared custom Gemini key" else "Saved custom Gemini key"
     }
 
+    fun setVolumeButtonsTurnPages(enabled: Boolean) {
+        preferencesRepository.updateSettings { it.copy(volumeButtonsTurnPages = enabled) }
+    }
+
+    fun exportBackupToUri(context: Context, uri: Uri) {
+        viewModelScope.launch {
+            val res = withContext(Dispatchers.IO) {
+                runCatching {
+                    val json = repository.exportOfflineBackupJson()
+                    context.contentResolver.openOutputStream(uri)?.use { out ->
+                        out.write(json.toByteArray(Charsets.UTF_8))
+                        out.flush()
+                    } ?: error("Could not open file for writing")
+                }
+            }
+            _statusMessage.value = if (res.isSuccess) {
+                "Backup exported successfully"
+            } else {
+                res.exceptionOrNull()?.message ?: "Could not export backup"
+            }
+        }
+    }
+
+    fun importBackupFromUri(context: Context, uri: Uri) {
+        viewModelScope.launch {
+            val rawRes = withContext(Dispatchers.IO) {
+                runCatching {
+                    context.contentResolver.openInputStream(uri)?.use { input ->
+                        val bytes = input.readBytes()
+                        if (bytes.size > 5 * 1024 * 1024) error("Backup file exceeds 5 MB")
+                        bytes.toString(Charsets.UTF_8)
+                    } ?: error("Could not open backup file")
+                }
+            }
+            val raw = rawRes.getOrElse { err ->
+                _statusMessage.value = err.message ?: "Could not read backup file"
+                return@launch
+            }
+            val importRes = repository.importOfflineBackupJson(raw)
+            _statusMessage.value = importRes.getOrElse { err ->
+                err.message ?: "Invalid backup JSON"
+            }
+        }
+    }
+
     fun setThemeMode(mode: ReaderThemeMode) {
-        preferencesRepository.updateSettings { it.copy(themeMode = mode) }
+        preferencesRepository.updateSettings { current ->
+            if (mode == ReaderThemeMode.NIGHT || mode == ReaderThemeMode.AMOLED) {
+                current.copy(themeMode = mode, lastDarkThemeMode = mode)
+            } else {
+                current.copy(themeMode = mode)
+            }
+        }
     }
 
     fun cycleTheme() {
@@ -314,9 +368,14 @@ class LibraryViewModel(
             val next = when (current.themeMode) {
                 ReaderThemeMode.PAPER -> ReaderThemeMode.SEPIA
                 ReaderThemeMode.SEPIA -> ReaderThemeMode.NIGHT
-                ReaderThemeMode.NIGHT -> ReaderThemeMode.PAPER
+                ReaderThemeMode.NIGHT -> ReaderThemeMode.AMOLED
+                ReaderThemeMode.AMOLED -> ReaderThemeMode.PAPER
             }
-            current.copy(themeMode = next)
+            if (next == ReaderThemeMode.NIGHT || next == ReaderThemeMode.AMOLED) {
+                current.copy(themeMode = next, lastDarkThemeMode = next)
+            } else {
+                current.copy(themeMode = next)
+            }
         }
     }
 

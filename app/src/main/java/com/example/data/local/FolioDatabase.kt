@@ -21,6 +21,10 @@ interface BookDao {
     @Query("SELECT * FROM books WHERE isHidden = 0 ORDER BY lastReadAt DESC")
     fun getVisibleBooks(): Flow<List<BookEntity>>
 
+    /** One-shot visible books snapshot for offline backup/restore (strictly excludes hidden shelf). */
+    @Query("SELECT * FROM books WHERE isHidden = 0")
+    suspend fun getVisibleBooksOnce(): List<BookEntity>
+
     /** Queried ONLY while Private Shelf is explicitly unlocked in memory. */
     @Query("SELECT * FROM books WHERE isHidden = 1 ORDER BY lastReadAt DESC")
     fun getHiddenBooks(): Flow<List<BookEntity>>
@@ -64,6 +68,9 @@ interface BookmarkDao {
     @Query("SELECT * FROM bookmarks WHERE bookId = :bookId ORDER BY pageIndex ASC")
     fun getBookmarksForBook(bookId: Long): Flow<List<BookmarkEntity>>
 
+    @Query("SELECT bm.* FROM bookmarks bm INNER JOIN books b ON bm.bookId = b.id WHERE b.isHidden = 0 ORDER BY bm.bookId ASC, bm.pageIndex ASC")
+    suspend fun getAllVisibleBookmarksOnce(): List<BookmarkEntity>
+
     @Query("SELECT * FROM bookmarks WHERE bookId = :bookId AND pageIndex = :pageIndex LIMIT 1")
     suspend fun getBookmarkAtPage(bookId: Long, pageIndex: Int): BookmarkEntity?
 
@@ -81,6 +88,9 @@ interface BookmarkDao {
 interface HighlightDao {
     @Query("SELECT * FROM highlights WHERE bookId = :bookId ORDER BY pageIndex ASC, startOffset ASC")
     fun getHighlightsForBook(bookId: Long): Flow<List<HighlightEntity>>
+
+    @Query("SELECT h.* FROM highlights h INNER JOIN books b ON h.bookId = b.id WHERE b.isHidden = 0 ORDER BY h.bookId ASC, h.pageIndex ASC, h.startOffset ASC")
+    suspend fun getAllVisibleHighlightsOnce(): List<HighlightEntity>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertHighlight(highlight: HighlightEntity): Long
@@ -100,6 +110,9 @@ interface ReadingActivityDao {
     @Query("SELECT * FROM reading_activity ORDER BY dateKey DESC LIMIT 90")
     fun getRecentActivity(): Flow<List<ReadingActivityEntity>>
 
+    @Query("SELECT * FROM reading_activity ORDER BY dateKey ASC")
+    suspend fun getAllActivityOnce(): List<ReadingActivityEntity>
+
     @Query("SELECT * FROM reading_activity WHERE dateKey = :dateKey LIMIT 1")
     suspend fun getByDate(dateKey: String): ReadingActivityEntity?
 
@@ -114,6 +127,9 @@ interface TranslationDao {
 
     @Query("SELECT * FROM translations WHERE isSavedToWordBank = 1 ORDER BY createdAt DESC")
     fun getSavedWordBank(): Flow<List<TranslationEntryEntity>>
+
+    @Query("SELECT * FROM translations WHERE isSavedToWordBank = 1 ORDER BY createdAt DESC")
+    suspend fun getSavedWordBankOnce(): List<TranslationEntryEntity>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(entry: TranslationEntryEntity): Long

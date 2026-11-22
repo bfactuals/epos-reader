@@ -4,7 +4,13 @@ import com.example.data.local.TranslationDao
 import com.example.data.model.TranslationEntryEntity
 import com.example.data.model.TranslationLanguage
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.OutputStreamWriter
@@ -316,10 +322,11 @@ class TranslationService(private val translationDao: TranslationDao) {
     }
 
     /**
-     * Splits multi-paragraph or long passages into <= 440-char sentence-aligned chunks
-     * so MyMemory translates entire paragraphs and pages cleanly without truncation.
+     * Splits multi-paragraph or long passages into <= 340-char sentence-aligned chunks and translates
+     * them in bounded parallel batches (3 at a time) under a strict 18s overall deadline so full-page
+     * translation resolves rapidly and never hangs on an infinite loading spinner.
      */
-    private fun translateLongTextWithMyMemory(
+    private suspend fun translateLongTextWithMyMemory(
         text: String,
         sourceCode: String,
         target: TranslationLanguage
@@ -327,24 +334,65 @@ class TranslationService(private val translationDao: TranslationDao) {
         val paragraphs = text.split("\n\n").filter { it.isNotBlank() }
         if (paragraphs.isEmpty()) return null
 
-        val translatedParagraphs = ArrayList<String>(paragraphs.size)
+        // Flatten into indexed (paraIndex, chunkText) jobs while capping network calls at 12 chunks
+        data class ChunkJob(val paraIdx: Int, val text: String)
+        val jobs = mutableListOf<ChunkJob>()
+        paragraphs.forEachIndexed { paraIdx, para ->
+            val chunks = splitIntoChunks(para, maxChunkChars = 340)
+            for (c in chunks) {
+                jobs.add(ChunkJob(paraIdx, c))
+            }
+        }
+
+        val networkJobs = jobs.take(12)
+        val overflowJobs = if (jobs.size > 12) jobs.drop(12) else emptyList()
+        val results = arrayOfNulls<String>(networkJobs.size)
         var anySucceeded = false
 
-        for (para in paragraphs) {
-            val chunks = splitIntoChunks(para, maxChunkChars = 430)
-            val chunkResults = ArrayList<String>(chunks.size)
-            for (chunk in chunks) {
-                val res = translateWithMyMemory(chunk, sourceCode, target)
-                if (!res.isNullOrBlank()) {
-                    chunkResults.add(res.trim())
-                    anySucceeded = true
-                } else {
-                    chunkResults.add(chunk)
+        // Bounded overall timeout so even degraded networks exit cleanly
+        withTimeoutOrNull(18_000L) {
+            coroutineScope {
+                var idx = 0
+                while (idx < networkJobs.size) {
+                    currentCoroutineContext().ensureActive()
+                    val batchEnd = (idx + 3).coerceAtMost(networkJobs.size)
+                    val deferred = (idx until batchEnd).map { jobIdx ->
+                        async(Dispatchers.IO) {
+                            val translated = runCatching {
+                                translateWithMyMemory(networkJobs[jobIdx].text, sourceCode, target)
+                            }.getOrNull()
+                            jobIdx to translated
+                        }
+                    }
+                    val batchOut = deferred.awaitAll()
+                    var batchHadSuccess = false
+                    for ((jobIdx, translated) in batchOut) {
+                        if (!translated.isNullOrBlank()) {
+                            results[jobIdx] = translated.trim()
+                            anySucceeded = true
+                            batchHadSuccess = true
+                        }
+                    }
+                    // Fail fast if first batch completely failed (e.g., offline / rate-limited)
+                    if (idx == 0 && !batchHadSuccess) break
+                    idx = batchEnd
                 }
             }
-            translatedParagraphs.add(chunkResults.joinToString(" "))
         }
-        return if (anySucceeded) translatedParagraphs.joinToString("\n\n") else null
+
+        if (!anySucceeded) return null
+
+        val grouped = Array(paragraphs.size) { mutableListOf<String>() }
+        networkJobs.forEachIndexed { i, job ->
+            grouped[job.paraIdx].add(results[i] ?: job.text)
+        }
+        overflowJobs.forEach { job ->
+            grouped[job.paraIdx].add(job.text)
+        }
+        return grouped
+            .map { it.joinToString(" ").trim() }
+            .filter { it.isNotEmpty() }
+            .joinToString("\n\n")
     }
 
     private fun splitIntoChunks(paragraph: String, maxChunkChars: Int): List<String> {
@@ -416,8 +464,8 @@ class TranslationService(private val translationDao: TranslationDao) {
         val url = URL("https://api.mymemory.translated.net/get?q=$encodedQ&langpair=$encodedPair")
         val conn = (url.openConnection() as HttpURLConnection).apply {
             requestMethod = "GET"
-            connectTimeout = 6500
-            readTimeout = 7000
+            connectTimeout = 4500
+            readTimeout = 5000
             setRequestProperty("Accept", "application/json")
         }
         return try {

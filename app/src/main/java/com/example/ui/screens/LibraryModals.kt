@@ -71,6 +71,7 @@ import com.example.data.model.DailyGoalUnit
 import com.example.data.model.ReaderSettings
 import com.example.data.model.ReadingActivityEntity
 import com.example.data.model.TranslationLanguage
+import com.example.ui.theme.AmoledBg
 import com.example.ui.theme.FolioIcons
 import com.example.ui.theme.FolioLogoMark
 import com.example.ui.theme.LocalFolioPalette
@@ -111,87 +112,88 @@ fun FirstTimeGreetingCardOverlay(
             .clickable(enabled = false) {}
             .statusBarsPadding()
             .navigationBarsPadding()
-            .padding(horizontal = 24.dp),
+            .padding(horizontal = 32.dp),
         contentAlignment = Alignment.Center
     ) {
         Surface(
-            shape = RoundedCornerShape(24.dp),
+            shape = RoundedCornerShape(20.dp),
             color = cardBg,
             border = BorderStroke(1.dp, cardBorder),
-            shadowElevation = 20.dp,
+            shadowElevation = 18.dp,
             modifier = Modifier
-                .fillMaxWidth()
-                .widthIn(max = 400.dp)
+                .fillMaxWidth(0.86f)
+                .widthIn(max = 310.dp)
                 .testTag("first_time_greeting_card")
         ) {
             Column(
-                modifier = Modifier.padding(horizontal = 28.dp, vertical = 32.dp),
+                modifier = Modifier.padding(horizontal = 20.dp, vertical = 22.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                FolioLogoMark(size = 56.dp)
+                FolioLogoMark(size = 40.dp)
 
-                Spacer(modifier = Modifier.height(20.dp))
+                Spacer(modifier = Modifier.height(12.dp))
 
                 Text(
                     text = "WELCOME TO ${APP_META.APP_TITLE.uppercase()}",
                     style = MaterialTheme.typography.labelSmall.copy(
-                        letterSpacing = 2.2.sp,
+                        letterSpacing = 2.0.sp,
                         fontWeight = FontWeight.Medium
                     ),
                     color = palette.accent
                 )
 
-                Spacer(modifier = Modifier.height(10.dp))
+                Spacer(modifier = Modifier.height(6.dp))
 
                 Text(
                     text = "A quiet space made for reading.",
-                    style = MaterialTheme.typography.headlineSmall.copy(
+                    style = MaterialTheme.typography.titleMedium.copy(
                         fontFamily = FontFamily.Serif,
                         fontWeight = FontWeight.Normal,
-                        lineHeight = 32.sp
+                        lineHeight = 24.sp
                     ),
                     color = primaryInk,
                     textAlign = TextAlign.Center
                 )
 
-                Spacer(modifier = Modifier.height(12.dp))
+                Spacer(modifier = Modifier.height(8.dp))
 
                 Text(
-                    text = "A short personal note and a quick guide to every gesture are already waiting on your shelf.",
-                    style = MaterialTheme.typography.bodyMedium.copy(
-                        lineHeight = 22.sp
+                    text = "A short note and quick gesture guide are waiting on your shelf.",
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        lineHeight = 18.sp
                     ),
                     color = mutedInk,
                     textAlign = TextAlign.Center
                 )
 
-                Spacer(modifier = Modifier.height(26.dp))
+                Spacer(modifier = Modifier.height(18.dp))
 
                 Button(
                     onClick = onOpenGuide,
-                    shape = RoundedCornerShape(14.dp),
+                    shape = RoundedCornerShape(12.dp),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = primaryInk,
                         contentColor = cardBg
                     ),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(50.dp)
+                        .height(44.dp)
                         .testTag("greeting_open_guide_button")
                 ) {
                     Text(
                         text = "Open Your Guide",
                         style = MaterialTheme.typography.labelLarge.copy(
                             fontWeight = FontWeight.SemiBold,
-                            letterSpacing = 0.3.sp
+                            letterSpacing = 0.2.sp
                         )
                     )
                 }
 
-                Spacer(modifier = Modifier.height(8.dp))
+                Spacer(modifier = Modifier.height(4.dp))
 
                 TextButton(
                     onClick = onSkipToLibrary,
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
                     modifier = Modifier.testTag("greeting_skip_to_library_button")
                 ) {
                     Text(
@@ -221,7 +223,10 @@ fun SettingsAndAboutSheet(
     hasSecretCode: Boolean,
     onSelectTheme: (ReaderThemeMode) -> Unit,
     onSelectGridColumns: (Int) -> Unit,
+    onToggleVolumeButtons: (Boolean) -> Unit,
     onToggleFullPageTranslate: (Boolean) -> Unit,
+    onExportBackup: () -> Unit,
+    onImportBackup: () -> Unit,
     onCreateSecretCode: (newCode: String, confirmCode: String) -> String?,
     onChangeSecretCode: (currentCode: String, newCode: String, confirmCode: String) -> String?,
     onRemoveSecretCode: (currentCode: String) -> String?,
@@ -406,12 +411,13 @@ fun SettingsAndAboutSheet(
                     Spacer(modifier = Modifier.height(10.dp))
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         listOf(
                             Triple(ReaderThemeMode.PAPER, "Paper", PaperBg),
                             Triple(ReaderThemeMode.SEPIA, "Sepia", SepiaBg),
-                            Triple(ReaderThemeMode.NIGHT, "Night", NightBg)
+                            Triple(ReaderThemeMode.NIGHT, "Night", NightBg),
+                            Triple(ReaderThemeMode.AMOLED, "AMOLED", AmoledBg)
                         ).forEach { (mode, label, swatch) ->
                             val selected = settings.themeMode == mode
                             Surface(
@@ -429,19 +435,23 @@ fun SettingsAndAboutSheet(
                             ) {
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.Center
+                                    horizontalArrangement = Arrangement.Center,
+                                    modifier = Modifier.padding(horizontal = 4.dp)
                                 ) {
                                     Box(
                                         modifier = Modifier
-                                            .size(14.dp)
+                                            .size(12.dp)
                                             .clip(CircleShape)
                                             .background(swatch)
                                             .border(0.75.dp, palette.divider, CircleShape)
                                     )
-                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
                                     Text(
                                         text = label,
-                                        style = MaterialTheme.typography.labelLarge,
+                                        style = MaterialTheme.typography.labelSmall.copy(
+                                            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium
+                                        ),
+                                        maxLines = 1,
                                         color = if (selected) palette.accent else palette.text
                                     )
                                 }
@@ -518,6 +528,54 @@ fun SettingsAndAboutSheet(
                                 }
                             }
                         }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            // 2c. Reading Controls (Hardware Volume Buttons Page Turn)
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = palette.background.copy(alpha = 0.72f),
+                border = BorderStroke(0.75.dp, palette.divider),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        text = "READING CONTROLS",
+                        style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 1.1.sp),
+                        color = palette.accent
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f).padding(end = 10.dp)) {
+                            Text(
+                                text = "Volume Buttons Turn Pages",
+                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
+                                color = palette.text
+                            )
+                            Text(
+                                text = "Use hardware Volume Up / Down to flip pages while reading.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = palette.textMuted
+                            )
+                        }
+                        Switch(
+                            checked = settings.volumeButtonsTurnPages,
+                            onCheckedChange = onToggleVolumeButtons,
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = palette.background,
+                                checkedTrackColor = palette.accent,
+                                uncheckedThumbColor = palette.textMuted,
+                                uncheckedTrackColor = palette.surface
+                            ),
+                            modifier = Modifier.testTag("settings_volume_buttons_switch")
+                        )
                     }
                 }
             }
@@ -894,6 +952,70 @@ fun SettingsAndAboutSheet(
                             modifier = Modifier.testTag("about_save_gemini_key_button")
                         ) {
                             Text("Save")
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            // 5. Offline Backup & Restore (.json)
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = palette.background.copy(alpha = 0.72f),
+                border = BorderStroke(0.75.dp, palette.divider),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        text = "OFFLINE BACKUP & RESTORE",
+                        style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 1.1.sp),
+                        color = palette.accent
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = "Export or restore your Word Bank, Highlights, Bookmarks, and Reading Stats locally as a .json file.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = palette.textMuted
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Button(
+                            onClick = onExportBackup,
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = palette.accent,
+                                contentColor = palette.background
+                            ),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(44.dp)
+                                .testTag("settings_export_backup_button")
+                        ) {
+                            Text(
+                                text = "Export (.json)",
+                                style = MaterialTheme.typography.labelLarge
+                            )
+                        }
+                        OutlinedButton(
+                            onClick = onImportBackup,
+                            shape = RoundedCornerShape(12.dp),
+                            border = BorderStroke(0.85.dp, palette.accent),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(44.dp)
+                                .testTag("settings_import_backup_button")
+                        ) {
+                            Text(
+                                text = "Import (.json)",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = palette.accent
+                            )
                         }
                     }
                 }

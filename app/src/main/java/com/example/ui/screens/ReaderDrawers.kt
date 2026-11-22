@@ -735,15 +735,16 @@ fun QuoteCardDialog(
                     )
                 }
 
-                // 3 Card Themes: Paper / Sepia / Off-Black
+                // 4 Card Themes: Paper / Sepia / Night / AMOLED
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     listOf(
                         ReaderThemeMode.PAPER to "Paper",
                         ReaderThemeMode.SEPIA to "Sepia",
-                        ReaderThemeMode.NIGHT to "Off-Black"
+                        ReaderThemeMode.NIGHT to "Night",
+                        ReaderThemeMode.AMOLED to "AMOLED"
                     ).forEach { (mode, label) ->
                         val sel = cardTheme == mode
                         Surface(

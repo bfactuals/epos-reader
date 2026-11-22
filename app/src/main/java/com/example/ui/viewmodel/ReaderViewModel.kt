@@ -20,6 +20,7 @@ import com.example.data.model.BookFormat
 import com.example.data.model.BookmarkEntity
 import com.example.data.model.ChapterTocItem
 import com.example.data.model.HighlightEntity
+import com.example.data.model.PageTurnStyle
 import com.example.data.model.ReaderSettings
 import com.example.data.model.SearchResult
 import com.example.data.model.TranslationEntryEntity
@@ -36,6 +37,8 @@ import com.example.engine.parser.Paginator
 import com.example.engine.parser.ParsedBook
 import com.example.engine.translate.TranslationService
 import com.example.ui.theme.HighlightColors
+import com.example.ui.theme.ReaderThemeMode
+import com.example.ui.theme.paletteFor
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
@@ -144,6 +147,8 @@ data class ReaderUiState(
     val sessionTimer: ReadingSessionTimerState = ReadingSessionTimerState(),
     val isAutoFlipPaused: Boolean = false,
     val autoFlipTrigger: Int = 0,
+    val hardwareTurnTrigger: Pair<Int, Int> = 0 to 0,
+    val verticalScrollJumpTrigger: Pair<Int, Int> = 0 to 0,
     val toastMessage: String? = null
 )
 
@@ -416,7 +421,7 @@ class ReaderViewModel(
     private fun buildVisualSignature(s: ReaderSettings, w: Int, h: Int): String {
         return "${w}x${h}_${topInsetPx}_${bottomInsetPx}_${s.themeMode}_${s.fontStyle}_" +
             "${s.fontSizeSp}_${s.lineSpacing}_${s.marginDp}_${s.bionicModeEnabled}_" +
-            "${s.paperGrainEnabled}_${s.pdfAutoCropEnabled}"
+            "${s.bionicIntensity}_${s.paperGrainEnabled}_${s.pdfAutoCropEnabled}_${s.footerShowChapterTime}"
     }
 
     private fun repaginateIfNeeded(force: Boolean) {
@@ -644,6 +649,22 @@ class ReaderViewModel(
         return ceil(remainingPages * 1.15).toInt().coerceAtLeast(1)
     }
 
+    private fun computeFooterTimeText(pageIndex: Int, totalPages: Int, showChapterTime: Boolean): String {
+        if (!showChapterTime) {
+            val mins = computeEstMinutesLeft(pageIndex, totalPages)
+            return if (mins <= 0) "done" else "${mins}m left"
+        }
+        val toc = _uiState.value.tocItems
+        val nextChapterStart = toc.firstOrNull { it.pageIndex > pageIndex }?.pageIndex ?: totalPages
+        val remainingInChapter = (nextChapterStart - 1 - pageIndex).coerceAtLeast(0)
+        return if (remainingInChapter == 0) {
+            "end of ch."
+        } else {
+            val mins = ceil(remainingInChapter * 1.15).toInt().coerceAtLeast(1)
+            "${mins}m in ch."
+        }
+    }
+
     private fun pageCacheKey(
         pageIndex: Int,
         visualSig: String,
@@ -778,11 +799,13 @@ class ReaderViewModel(
 
         val pageHighlights = allHighlights.filter { it.pageIndex == pageIndex }
         val estLeft = computeEstMinutesLeft(pageIndex, totalPages)
+        val footerText = computeFooterTimeText(pageIndex, totalPages, s.footerShowChapterTime)
         val bmp = withContext(Dispatchers.Default) {
             when (pb) {
                 is ParsedBook.TextBook -> {
                     val page = getOrPaginateLazyPage(pageIndex, w, h, s) ?: return@withContext null
                     val actualTotal = if (isLazyChapterMode) currentLazyTotalPages().coerceAtLeast(1) else totalPages
+                    val resolvedFooter = computeFooterTimeText(pageIndex, actualTotal, s.footerShowChapterTime)
                     bitmapRenderer.renderTextPage(
                         page = page,
                         totalPages = actualTotal,
@@ -794,7 +817,8 @@ class ReaderViewModel(
                         bottomInsetPx = bottomInsetPx,
                         settings = s,
                         highlights = pageHighlights,
-                        isFeaturedStory = false
+                        isFeaturedStory = false,
+                        footerTimeText = resolvedFooter
                     )
                 }
                 is ParsedBook.PdfBook -> {
@@ -809,7 +833,8 @@ class ReaderViewModel(
                         topInsetPx = topInsetPx,
                         bottomInsetPx = bottomInsetPx,
                         settings = s,
-                        highlights = pageHighlights
+                        highlights = pageHighlights,
+                        footerTimeText = footerText
                     )
                 }
             }
@@ -818,6 +843,47 @@ class ReaderViewModel(
             pageCache.put(key, bmp)
         }
         return bmp
+    }
+
+    /** On-demand cached bitmap loader for Vertical Scroll mode (reuses 28 MB LRU cache). */
+    suspend fun getBitmapForVerticalScroll(pageIndex: Int): Bitmap? {
+        val pb = parsedBook ?: return null
+        val w = viewportSize.width
+        val h = viewportSize.height
+        if (w <= 0 || h <= 0) return null
+        val s = settings.value
+        val total = if (pb is ParsedBook.TextBook && isLazyChapterMode) {
+            currentLazyTotalPages().coerceAtLeast(1)
+        } else {
+            _uiState.value.totalPages.coerceAtLeast(1)
+        }
+        if (pageIndex !in 0 until total) return null
+        val visualSig = buildVisualSignature(s, w, h)
+        return getOrRenderPage(pb, pageIndex, total, w, h, s, visualSig, _uiState.value.highlights)
+    }
+
+    /** Updates reading progress & metadata smoothly as the user scrolls vertically through pages. */
+    fun onVerticalScrollPageChanged(pageIndex: Int) {
+        val st = _uiState.value
+        val clamped = pageIndex.coerceIn(0, (st.totalPages - 1).coerceAtLeast(0))
+        if (clamped == st.currentPage) return
+        val chapterTitle = getChapterTitleForPage(clamped)
+        _uiState.update { state ->
+            state.copy(
+                currentPage = clamped,
+                estimatedMinutesLeft = computeEstMinutesLeft(clamped, state.totalPages),
+                currentChapterTitle = chapterTitle,
+                isCurrentPageBookmarked = state.bookmarks.any { it.pageIndex == clamped },
+                activeSelection = null,
+                activeTranslation = null
+            )
+        }
+        persistProgress(clamped, st.totalPages)
+        st.book?.let { b ->
+            viewModelScope.launch {
+                repository.recordVisibleReadingActivity(isHiddenBook = b.isHidden, deltaMinutes = 0, deltaPages = 1)
+            }
+        }
     }
 
     // --- Page Turning & Navigation (strictly locked to +/- 1 page with debounce) ---
@@ -905,6 +971,7 @@ class ReaderViewModel(
                 fullPageTranslation = null,
                 isSearchOpen = false,
                 isNotebookOpen = false,
+                verticalScrollJumpTrigger = (state.verticalScrollJumpTrigger.first + 1) to clamped,
                 currentBitmap = cachedTarget ?: state.currentBitmap
             )
         }
@@ -1558,7 +1625,72 @@ class ReaderViewModel(
     }
 
     fun updateSettings(transform: (ReaderSettings) -> ReaderSettings) {
-        preferencesRepository.updateSettings(transform)
+        preferencesRepository.updateSettings { current ->
+            val updated = transform(current)
+            if (updated.themeMode == ReaderThemeMode.NIGHT || updated.themeMode == ReaderThemeMode.AMOLED) {
+                updated.copy(lastDarkThemeMode = updated.themeMode)
+            } else {
+                updated
+            }
+        }
+    }
+
+    /** 1-Tap Sun/Moon toggle between Day (Paper) and Night/AMOLED dark theme. */
+    fun toggleQuickDayNightTheme() {
+        val current = settings.value
+        val nextMode = if (paletteFor(current.themeMode).isDark) {
+            ReaderThemeMode.PAPER
+        } else {
+            current.lastDarkThemeMode
+        }
+        updateSettings { it.copy(themeMode = nextMode) }
+        showToast("${nextMode.label} theme")
+    }
+
+    /** Cycles bottom footer between Time left in chapter and Time left in book. */
+    fun toggleFooterTimeMode() {
+        val nextShowChapter = !settings.value.footerShowChapterTime
+        updateSettings { it.copy(footerShowChapterTime = nextShowChapter) }
+        showToast(if (nextShowChapter) "Footer: Time left in chapter" else "Footer: Time left in book")
+    }
+
+    fun saveTimerPillPosition(nx: Float, ny: Float) {
+        preferencesRepository.updateSettings {
+            it.copy(
+                timerPillPosX = nx.coerceIn(0f, 1f),
+                timerPillPosY = ny.coerceIn(0f, 1f)
+            )
+        }
+    }
+
+    fun saveTranslatePillPosition(nx: Float, ny: Float) {
+        preferencesRepository.updateSettings {
+            it.copy(
+                translatePillPosX = nx.coerceIn(0f, 1f),
+                translatePillPosY = ny.coerceIn(0f, 1f)
+            )
+        }
+    }
+
+    /** Triggers a clean page turn from hardware Volume Up/Down buttons. */
+    fun triggerHardwarePageTurn(delta: Int) {
+        val step = delta.coerceIn(-1, 1)
+        if (step == 0) return
+        val st = _uiState.value
+        val style = settings.value.pageTurnStyle
+        if (style == PageTurnStyle.VERTICAL_SCROLL) {
+            val target = (st.currentPage + step).coerceIn(0, (st.totalPages - 1).coerceAtLeast(0))
+            if (target != st.currentPage) {
+                jumpToPage(target, offerReturnPill = false)
+            }
+        } else if (style == PageTurnStyle.INSTANT) {
+            commitPageTurn(step)
+            triggerPageLandHaptic()
+        } else {
+            _uiState.update { state ->
+                state.copy(hardwareTurnTrigger = (state.hardwareTurnTrigger.first + 1) to step)
+            }
+        }
     }
 
     // --- Bookmarks ---

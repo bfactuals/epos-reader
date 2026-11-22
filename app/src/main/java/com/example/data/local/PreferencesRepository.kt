@@ -6,6 +6,7 @@ import com.example.config.APP_META
 import com.example.config.RemoteAppConfig
 import com.example.data.model.AmbientSoundMode
 import com.example.data.model.DailyGoalUnit
+import com.example.data.model.PageTurnStyle
 import com.example.data.model.ReaderSettings
 import com.example.data.model.TranslationLanguage
 import com.example.engine.config.RemoteConfigService
@@ -31,10 +32,15 @@ class PreferencesRepository(context: Context) {
 
     private fun loadSettings(): ReaderSettings {
         val themeName = prefs.getString(KEY_THEME, ReaderThemeMode.PAPER.name)
+        val lastDarkName = prefs.getString(KEY_LAST_DARK_THEME, ReaderThemeMode.NIGHT.name)
         val fontName = prefs.getString(KEY_FONT, ReaderFontStyle.CLASSIC_BOOK.name)
+        val pageTurnName = prefs.getString(KEY_PAGE_TURN_STYLE, PageTurnStyle.CURL.name)
         val ambientName = prefs.getString(KEY_AMBIENT_MODE, AmbientSoundMode.OFF.name)
         val goalUnitName = prefs.getString(KEY_GOAL_UNIT, DailyGoalUnit.MINUTES.name)
         val targetLangCode = prefs.getString(KEY_DEFAULT_TARGET_LANG, TranslationLanguage.HINDI.code)
+        val resolvedLastDark = runCatching { ReaderThemeMode.valueOf(lastDarkName ?: "") }
+            .getOrDefault(ReaderThemeMode.NIGHT)
+            .let { if (it == ReaderThemeMode.AMOLED || it == ReaderThemeMode.NIGHT) it else ReaderThemeMode.NIGHT }
         return ReaderSettings(
             themeMode = runCatching { ReaderThemeMode.valueOf(themeName ?: "") }
                 .getOrDefault(ReaderThemeMode.PAPER),
@@ -52,6 +58,16 @@ class PreferencesRepository(context: Context) {
             brightnessLevel = prefs.getFloat(KEY_BRIGHTNESS, 0.85f).coerceIn(0.05f, 1.0f),
             readingRulerEnabled = prefs.getBoolean(KEY_RULER, false),
             bionicModeEnabled = prefs.getBoolean(KEY_BIONIC, false),
+            bionicIntensity = prefs.getFloat(KEY_BIONIC_INTENSITY, 0.5f).coerceIn(0.25f, 0.85f),
+            pageTurnStyle = runCatching { PageTurnStyle.valueOf(pageTurnName ?: "") }
+                .getOrDefault(PageTurnStyle.CURL),
+            volumeButtonsTurnPages = prefs.getBoolean(KEY_VOLUME_BUTTONS_TURN, false),
+            footerShowChapterTime = prefs.getBoolean(KEY_FOOTER_CHAPTER_TIME, false),
+            lastDarkThemeMode = resolvedLastDark,
+            timerPillPosX = prefs.getFloat(KEY_TIMER_PILL_X, -1f),
+            timerPillPosY = prefs.getFloat(KEY_TIMER_PILL_Y, -1f),
+            translatePillPosX = prefs.getFloat(KEY_TRANSLATE_PILL_X, -1f),
+            translatePillPosY = prefs.getFloat(KEY_TRANSLATE_PILL_Y, -1f),
             keepScreenAwake = prefs.getBoolean(KEY_KEEP_AWAKE, true),
             oneHandedTapMode = prefs.getBoolean(KEY_ONE_HANDED, false),
             pdfAutoCropEnabled = prefs.getBoolean(KEY_PDF_CROP, false),
@@ -165,6 +181,15 @@ class PreferencesRepository(context: Context) {
             .putFloat(KEY_BRIGHTNESS, s.brightnessLevel)
             .putBoolean(KEY_RULER, s.readingRulerEnabled)
             .putBoolean(KEY_BIONIC, s.bionicModeEnabled)
+            .putFloat(KEY_BIONIC_INTENSITY, s.bionicIntensity.coerceIn(0.25f, 0.85f))
+            .putString(KEY_PAGE_TURN_STYLE, s.pageTurnStyle.name)
+            .putBoolean(KEY_VOLUME_BUTTONS_TURN, s.volumeButtonsTurnPages)
+            .putBoolean(KEY_FOOTER_CHAPTER_TIME, s.footerShowChapterTime)
+            .putString(KEY_LAST_DARK_THEME, s.lastDarkThemeMode.name)
+            .putFloat(KEY_TIMER_PILL_X, s.timerPillPosX)
+            .putFloat(KEY_TIMER_PILL_Y, s.timerPillPosY)
+            .putFloat(KEY_TRANSLATE_PILL_X, s.translatePillPosX)
+            .putFloat(KEY_TRANSLATE_PILL_Y, s.translatePillPosY)
             .putBoolean(KEY_KEEP_AWAKE, s.keepScreenAwake)
             .putBoolean(KEY_ONE_HANDED, s.oneHandedTapMode)
             .putBoolean(KEY_PDF_CROP, s.pdfAutoCropEnabled)
@@ -186,6 +211,7 @@ class PreferencesRepository(context: Context) {
     companion object {
         private const val PREFS_NAME = "epos_reader_prefs"
         private const val KEY_THEME = "theme_mode"
+        private const val KEY_LAST_DARK_THEME = "last_dark_theme_mode"
         private const val KEY_FONT = "font_style"
         private const val KEY_FONT_SIZE = "font_size_sp"
         private const val KEY_LINE_SPACING = "line_spacing"
@@ -199,6 +225,14 @@ class PreferencesRepository(context: Context) {
         private const val KEY_BRIGHTNESS = "brightness_level"
         private const val KEY_RULER = "reading_ruler"
         private const val KEY_BIONIC = "bionic_mode"
+        private const val KEY_BIONIC_INTENSITY = "bionic_intensity"
+        private const val KEY_PAGE_TURN_STYLE = "page_turn_style"
+        private const val KEY_VOLUME_BUTTONS_TURN = "volume_buttons_turn_pages"
+        private const val KEY_FOOTER_CHAPTER_TIME = "footer_show_chapter_time"
+        private const val KEY_TIMER_PILL_X = "timer_pill_x"
+        private const val KEY_TIMER_PILL_Y = "timer_pill_y"
+        private const val KEY_TRANSLATE_PILL_X = "translate_pill_x"
+        private const val KEY_TRANSLATE_PILL_Y = "translate_pill_y"
         private const val KEY_KEEP_AWAKE = "keep_awake"
         private const val KEY_ONE_HANDED = "one_handed_tap"
         private const val KEY_PDF_CROP = "pdf_auto_crop"

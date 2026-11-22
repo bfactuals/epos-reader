@@ -2,6 +2,7 @@ package com.example
 
 import android.graphics.Color as AndroidColor
 import android.os.Bundle
+import android.view.KeyEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
@@ -26,9 +27,10 @@ import com.example.engine.translate.TranslationService
 import com.example.ui.screens.LibraryScreen
 import com.example.ui.screens.ReaderScreen
 import com.example.ui.theme.FolioTheme
-import com.example.ui.theme.ReaderThemeMode
+import com.example.ui.theme.paletteFor
 import com.example.ui.viewmodel.LibraryViewModel
 import com.example.ui.viewmodel.ReaderViewModel
+import kotlinx.coroutines.flow.MutableSharedFlow
 
 class MainActivity : ComponentActivity() {
 
@@ -38,15 +40,33 @@ class MainActivity : ComponentActivity() {
     private val paperAudioEngine by lazy { PaperAudioEngine(applicationContext) }
     private val translationService by lazy { TranslationService(database.translationDao()) }
 
+    private val volumePageTurnEvents = MutableSharedFlow<Int>(extraBufferCapacity = 4)
+
+    @Volatile
+    private var interceptVolumeKeys: Boolean = false
+
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (interceptVolumeKeys &&
+            (event.keyCode == KeyEvent.KEYCODE_VOLUME_DOWN || event.keyCode == KeyEvent.KEYCODE_VOLUME_UP)
+        ) {
+            if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
+                val delta = if (event.keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) 1 else -1
+                volumePageTurnEvents.tryEmit(delta)
+            }
+            return true
+        }
+        return super.dispatchKeyEvent(event)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
         setContent {
             val settings by preferencesRepository.settings.collectAsStateWithLifecycle()
-            val isDark = settings.themeMode == ReaderThemeMode.NIGHT
+            val isDark = paletteFor(settings.themeMode).isDark
 
-            // Keep edge-to-edge status & navigation bar icons harmonized with Paper / Sepia / Night
+            // Keep edge-to-edge status & navigation bar icons harmonized with Paper / Sepia / Night / AMOLED
             LaunchedEffect(isDark) {
                 enableEdgeToEdge(
                     statusBarStyle = if (isDark) {
@@ -75,6 +95,14 @@ class MainActivity : ComponentActivity() {
                     activeBookIsHidden = activeBookId?.let { id ->
                         libraryRepository.getBookById(id)?.isHidden == true
                     } ?: false
+                }
+
+                // Intercept hardware Volume Up/Down only while actively reading and toggle is enabled
+                LaunchedEffect(activeBookId, settings.volumeButtonsTurnPages) {
+                    interceptVolumeKeys = activeBookId != null && settings.volumeButtonsTurnPages
+                }
+                DisposableEffect(Unit) {
+                    onDispose { interceptVolumeKeys = false }
                 }
 
                 // Zero-Trace Security Rule: closing or backgrounding the app immediately locks the vault
@@ -115,6 +143,7 @@ class MainActivity : ComponentActivity() {
                         )
                         ReaderScreen(
                             viewModel = readerViewModel,
+                            volumePageTurnEvents = volumePageTurnEvents,
                             onNavigateBack = { activeBookId = null }
                         )
                     }

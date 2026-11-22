@@ -32,6 +32,14 @@ enum class DailyGoalUnit(val label: String, val shortUnit: String) {
     PAGES("Pages", "p")
 }
 
+enum class PageTurnStyle(val label: String) {
+    CURL("Page Curl"),
+    SLIDE("Slide"),
+    FADE("Fade"),
+    INSTANT("Instant"),
+    VERTICAL_SCROLL("Vertical Scroll")
+}
+
 enum class TranslationLanguage(
     val code: String,
     val label: String,
@@ -184,6 +192,15 @@ data class ReaderSettings(
     val brightnessLevel: Float = 0.85f, // 0.05f..1.0f custom reader brightness
     val readingRulerEnabled: Boolean = false,
     val bionicModeEnabled: Boolean = false,
+    val bionicIntensity: Float = 0.5f, // 0.25f (Light) .. 0.85f (Strong)
+    val pageTurnStyle: PageTurnStyle = PageTurnStyle.CURL,
+    val volumeButtonsTurnPages: Boolean = false,
+    val footerShowChapterTime: Boolean = false,
+    val lastDarkThemeMode: ReaderThemeMode = ReaderThemeMode.NIGHT,
+    val timerPillPosX: Float = -1f, // normalized 0..1 (< 0 = default top-right)
+    val timerPillPosY: Float = -1f,
+    val translatePillPosX: Float = -1f, // normalized 0..1 (< 0 = default bottom-right)
+    val translatePillPosY: Float = -1f,
     val keepScreenAwake: Boolean = true,
     val oneHandedTapMode: Boolean = false,
     val pdfAutoCropEnabled: Boolean = false,

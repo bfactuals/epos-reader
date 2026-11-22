@@ -4,7 +4,7 @@ package com.example.config
  * Single top-level metadata & remote GitHub config definition for Epos.
  */
 const val APP_NAME: String = "Epos"
-const val APP_VERSION: String = "v1.0.0"
+const val APP_VERSION: String = "v1.1.0"
 const val REMOTE_CONFIG_URL: String =
     "https://raw.githubusercontent.com/bfactuals/my-apps-config/refs/heads/main/epos-config.json"
 

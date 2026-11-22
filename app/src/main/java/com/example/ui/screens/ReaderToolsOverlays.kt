@@ -9,10 +9,13 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -25,6 +28,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
@@ -52,17 +57,22 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.testTag
@@ -73,6 +83,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -83,6 +94,7 @@ import com.example.ui.theme.LocalFolioPalette
 import com.example.ui.viewmodel.ActiveTranslationCard
 import com.example.ui.viewmodel.FullPageTranslationState
 import com.example.ui.viewmodel.ReadingSessionTimerState
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlin.math.roundToInt
 
 /**
@@ -732,46 +744,88 @@ fun ReadingRulerOverlay(
 }
 
 /**
- * Unobtrusive Corner Button for 1-Tap Full-Page Translation (only visible when enabled in settings).
+ * Compact, freely draggable 1-Tap Full-Page Translation pill (remembers its last dragged position).
  */
 @Composable
 fun FloatingTranslatePagePill(
     visible: Boolean,
     targetLanguage: TranslationLanguage,
+    containerSize: IntSize,
+    topInsetPx: Int,
+    bottomInsetPx: Int,
+    savedPosX: Float,
+    savedPosY: Float,
+    onPositionSaved: (Float, Float) -> Unit,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val palette = LocalFolioPalette.current
+    val density = LocalDensity.current.density
+    val marginPx = 10f * density
+    var pillSize by remember { mutableStateOf(IntSize.Zero) }
+
+    val minX = marginPx
+    val maxX = (containerSize.width - pillSize.width - marginPx).coerceAtLeast(minX)
+    val minY = topInsetPx + marginPx
+    val maxY = (containerSize.height - bottomInsetPx - pillSize.height - marginPx).coerceAtLeast(minY)
+
+    var posX by remember(containerSize, pillSize, savedPosX) {
+        mutableFloatStateOf(minX + (maxX - minX) * savedPosX.coerceIn(0f, 1f))
+    }
+    var posY by remember(containerSize, pillSize, savedPosY) {
+        mutableFloatStateOf(minY + (maxY - minY) * savedPosY.coerceIn(0f, 1f))
+    }
+    val latestOnSave by rememberUpdatedState(onPositionSaved)
+
     AnimatedVisibility(
-        visible = visible,
+        visible = visible && containerSize.width > 0 && containerSize.height > 0,
         enter = fadeIn(),
         exit = fadeOut(),
         modifier = modifier
+            .offset { IntOffset(posX.roundToInt(), posY.roundToInt()) }
     ) {
         Surface(
             onClick = onClick,
-            shape = RoundedCornerShape(24.dp),
+            shape = RoundedCornerShape(20.dp),
             color = palette.surfaceGlass,
             border = BorderStroke(0.75.dp, palette.accent.copy(alpha = 0.45f)),
-            shadowElevation = 6.dp,
+            shadowElevation = 5.dp,
             modifier = Modifier
-                .heightIn(min = 48.dp)
+                .onSizeChanged { pillSize = it }
+                .pointerInput(containerSize, pillSize, topInsetPx, bottomInsetPx) {
+                    detectDragGestures(
+                        onDragEnd = {
+                            val nx = if (maxX > minX) ((posX - minX) / (maxX - minX)).coerceIn(0f, 1f) else 0.9f
+                            val ny = if (maxY > minY) ((posY - minY) / (maxY - minY)).coerceIn(0f, 1f) else 0.88f
+                            latestOnSave(nx, ny)
+                        },
+                        onDragCancel = {
+                            val nx = if (maxX > minX) ((posX - minX) / (maxX - minX)).coerceIn(0f, 1f) else 0.9f
+                            val ny = if (maxY > minY) ((posY - minY) / (maxY - minY)).coerceIn(0f, 1f) else 0.88f
+                            latestOnSave(nx, ny)
+                        }
+                    ) { change, dragAmount ->
+                        change.consume()
+                        posX = (posX + dragAmount.x).coerceIn(minX, maxX)
+                        posY = (posY + dragAmount.y).coerceIn(minY, maxY)
+                    }
+                }
                 .testTag("reader_translate_page_button")
         ) {
             Row(
-                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                modifier = Modifier.padding(horizontal = 11.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                horizontalArrangement = Arrangement.spacedBy(5.dp)
             ) {
                 Icon(
                     imageVector = FolioIcons.Translate,
-                    contentDescription = "Translate current page",
+                    contentDescription = "Translate current page (drag to move)",
                     tint = palette.accent,
-                    modifier = Modifier.size(18.dp)
+                    modifier = Modifier.size(15.dp)
                 )
                 Text(
                     text = targetLanguage.code.uppercase(),
-                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
                     color = palette.text
                 )
             }
@@ -1026,47 +1080,91 @@ fun FullPageTranslationOverlay(
 }
 
 /**
- * Tiny, non-distracting Live Countdown Pill in the corner of the Reader Screen (e.g., "14:32").
+ * Compact, freely draggable Live Countdown Pill (e.g., "14:32") that remembers its last dragged coordinates.
  */
 @Composable
 fun ReadingSessionTimerPill(
     timer: ReadingSessionTimerState,
     visible: Boolean,
+    containerSize: IntSize,
+    topInsetPx: Int,
+    bottomInsetPx: Int,
+    savedPosX: Float,
+    savedPosY: Float,
+    onPositionSaved: (Float, Float) -> Unit,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val palette = LocalFolioPalette.current
+    val density = LocalDensity.current.density
+    val marginPx = 10f * density
+    var pillSize by remember { mutableStateOf(IntSize.Zero) }
+
+    val minX = marginPx
+    val maxX = (containerSize.width - pillSize.width - marginPx).coerceAtLeast(minX)
+    val minY = topInsetPx + marginPx
+    val maxY = (containerSize.height - bottomInsetPx - pillSize.height - marginPx).coerceAtLeast(minY)
+
+    var posX by remember(containerSize, pillSize, savedPosX) {
+        mutableFloatStateOf(minX + (maxX - minX) * savedPosX.coerceIn(0f, 1f))
+    }
+    var posY by remember(containerSize, pillSize, savedPosY) {
+        mutableFloatStateOf(minY + (maxY - minY) * savedPosY.coerceIn(0f, 1f))
+    }
+    val latestOnSave by rememberUpdatedState(onPositionSaved)
+
     val mins = timer.remainingSeconds / 60
     val secs = timer.remainingSeconds % 60
     val formatted = String.format("%02d:%02d", mins, secs)
 
     AnimatedVisibility(
-        visible = visible && timer.isActivePillVisible,
+        visible = visible && timer.isActivePillVisible && containerSize.width > 0 && containerSize.height > 0,
         enter = fadeIn(),
         exit = fadeOut(),
         modifier = modifier
+            .offset { IntOffset(posX.roundToInt(), posY.roundToInt()) }
     ) {
         Surface(
             onClick = onClick,
             shape = RoundedCornerShape(18.dp),
-            color = palette.surfaceGlass.copy(alpha = if (timer.isPaused) 0.78f else 0.92f),
+            color = palette.surfaceGlass,
             border = BorderStroke(
                 0.75.dp,
                 if (timer.isPaused) palette.divider else palette.accent.copy(alpha = 0.55f)
             ),
             shadowElevation = 4.dp,
-            modifier = Modifier.testTag("reader_session_timer_pill")
+            modifier = Modifier
+                .onSizeChanged { pillSize = it }
+                .pointerInput(containerSize, pillSize, topInsetPx, bottomInsetPx) {
+                    detectDragGestures(
+                        onDragEnd = {
+                            val nx = if (maxX > minX) ((posX - minX) / (maxX - minX)).coerceIn(0f, 1f) else 0.9f
+                            val ny = if (maxY > minY) ((posY - minY) / (maxY - minY)).coerceIn(0f, 1f) else 0.04f
+                            latestOnSave(nx, ny)
+                        },
+                        onDragCancel = {
+                            val nx = if (maxX > minX) ((posX - minX) / (maxX - minX)).coerceIn(0f, 1f) else 0.9f
+                            val ny = if (maxY > minY) ((posY - minY) / (maxY - minY)).coerceIn(0f, 1f) else 0.04f
+                            latestOnSave(nx, ny)
+                        }
+                    ) { change, dragAmount ->
+                        change.consume()
+                        posX = (posX + dragAmount.x).coerceIn(minX, maxX)
+                        posY = (posY + dragAmount.y).coerceIn(minY, maxY)
+                    }
+                }
+                .testTag("reader_session_timer_pill")
         ) {
             Row(
-                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(5.dp)
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 Icon(
                     imageVector = FolioIcons.Timer,
-                    contentDescription = "Reading session timer $formatted",
+                    contentDescription = "Reading session timer $formatted (drag to move)",
                     tint = if (timer.isPaused) palette.textMuted else palette.accent,
-                    modifier = Modifier.size(13.dp)
+                    modifier = Modifier.size(12.dp)
                 )
                 Text(
                     text = if (timer.isPaused) "$formatted ⏸" else formatted,
@@ -1483,4 +1581,128 @@ fun GoToPageDialog(
         modifier = Modifier.testTag("go_to_page_dialog")
     )
 }
+
+/**
+ * Smooth continuous Vertical Scroll reader mode (great for PDFs and long study notes).
+ * Renders each page on-demand using the same LRU Bitmap pipeline and respects theme/font/footer changes.
+ */
+@Composable
+fun VerticalScrollReaderView(
+    totalPages: Int,
+    initialPage: Int,
+    jumpTrigger: Pair<Int, Int>,
+    renderSignature: String,
+    bottomInsetPx: Int,
+    onSizeReady: (IntSize) -> Unit,
+    loadPageBitmap: suspend (Int) -> Bitmap?,
+    onVisiblePageChanged: (Int) -> Unit,
+    onCenterTap: () -> Unit,
+    onFooterTap: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val palette = LocalFolioPalette.current
+    val density = LocalDensity.current
+    val safeTotal = totalPages.coerceAtLeast(1)
+    val listState = rememberLazyListState(
+        initialFirstVisibleItemIndex = initialPage.coerceIn(0, safeTotal - 1)
+    )
+    var viewportSize by remember { mutableStateOf(IntSize.Zero) }
+    val latestOnVisibleChanged by rememberUpdatedState(onVisiblePageChanged)
+    val latestOnCenterTap by rememberUpdatedState(onCenterTap)
+    val latestOnFooterTap by rememberUpdatedState(onFooterTap)
+
+    // Scroll programmatically when user scrubs, jumps via TOC/Go-to-Page, or presses Volume keys
+    LaunchedEffect(jumpTrigger.first) {
+        if (jumpTrigger.first > 0) {
+            val target = jumpTrigger.second.coerceIn(0, safeTotal - 1)
+            if (listState.firstVisibleItemIndex != target) {
+                listState.scrollToItem(target)
+            }
+        }
+    }
+
+    // Track visible page index smoothly as user scrolls
+    LaunchedEffect(listState) {
+        snapshotFlow { listState.firstVisibleItemIndex }
+            .distinctUntilChanged()
+            .collect { idx ->
+                latestOnVisibleChanged(idx)
+            }
+    }
+
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .background(palette.background)
+            .onSizeChanged { sz ->
+                viewportSize = sz
+                if (sz.width > 0 && sz.height > 0) {
+                    onSizeReady(sz)
+                }
+            }
+            .testTag("reader_vertical_scroll_view")
+    ) {
+        if (viewportSize.width > 0 && viewportSize.height > 0) {
+            val pageHeightDp = with(density) { viewportSize.height.toDp() }
+            LazyColumn(
+                state = listState,
+                contentPadding = PaddingValues(0.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .pointerInput(viewportSize, bottomInsetPx) {
+                        detectTapGestures { offset ->
+                            val footerTop = viewportSize.height - bottomInsetPx - 42f * density.density
+                            val tappedFooter = offset.y >= footerTop &&
+                                offset.x in (viewportSize.width * 0.15f)..(viewportSize.width * 0.85f)
+                            if (tappedFooter) {
+                                latestOnFooterTap()
+                            } else {
+                                latestOnCenterTap()
+                            }
+                        }
+                    }
+            ) {
+                items(count = safeTotal, key = { it }) { pageIdx ->
+                    val bmp by produceState<Bitmap?>(
+                        initialValue = null,
+                        key1 = pageIdx,
+                        key2 = renderSignature
+                    ) {
+                        value = loadPageBitmap(pageIdx)
+                    }
+
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(pageHeightDp)
+                            .background(palette.background),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        val rendered = bmp
+                        if (rendered != null) {
+                            Image(
+                                bitmap = rendered.asImageBitmap(),
+                                contentDescription = "Page ${pageIdx + 1}",
+                                contentScale = ContentScale.FillBounds,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        } else {
+                            CircularProgressIndicator(
+                                color = palette.accent.copy(alpha = 0.5f),
+                                strokeWidth = 1.8.dp,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    }
+                    HorizontalDivider(
+                        color = palette.divider.copy(alpha = 0.55f),
+                        thickness = 0.75.dp
+                    )
+                }
+            }
+        }
+    }
+}
+
 

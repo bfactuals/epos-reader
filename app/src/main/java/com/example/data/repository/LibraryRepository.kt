@@ -19,6 +19,8 @@ import com.example.ui.theme.CuratedCoverStyles
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -331,6 +333,224 @@ class LibraryRepository(
 
     suspend fun deleteHighlight(id: Long) = withContext(Dispatchers.IO) {
         highlightDao.deleteHighlightById(id)
+    }
+
+    // --- Offline Backup & Restore (.json) — Strictly excludes Private Shelf books ---
+    suspend fun exportOfflineBackupJson(): String = withContext(Dispatchers.IO) {
+        val visibleBooks = bookDao.getVisibleBooksOnce()
+        val bookById = visibleBooks.associateBy { it.id }
+        val bookmarks = bookmarkDao.getAllVisibleBookmarksOnce()
+        val highlights = highlightDao.getAllVisibleHighlightsOnce()
+        val stats = activityDao.getAllActivityOnce()
+        val wordBank = translationDao.getSavedWordBankOnce()
+
+        val root = JSONObject().apply {
+            put("app", "Epos")
+            put("schemaVersion", 1)
+            put("exportedAt", System.currentTimeMillis())
+        }
+
+        val wordArr = JSONArray()
+        wordBank.forEach { w ->
+            wordArr.put(
+                JSONObject().apply {
+                    put("normalizedKey", w.normalizedKey)
+                    put("sourceText", w.sourceText)
+                    put("translatedText", w.translatedText)
+                    put("sourceLanguage", w.sourceLanguage)
+                    put("targetLanguage", w.targetLanguage)
+                    put("bookTitle", w.bookTitle)
+                    put("createdAt", w.createdAt)
+                }
+            )
+        }
+        root.put("wordBank", wordArr)
+
+        val statsArr = JSONArray()
+        stats.forEach { s ->
+            statsArr.put(
+                JSONObject().apply {
+                    put("dateKey", s.dateKey)
+                    put("minutesRead", s.minutesRead)
+                    put("pagesRead", s.pagesRead)
+                }
+            )
+        }
+        root.put("readingStats", statsArr)
+
+        val bmArr = JSONArray()
+        bookmarks.forEach { bm ->
+            val book = bookById[bm.bookId] ?: return@forEach
+            bmArr.put(
+                JSONObject().apply {
+                    put("bookTitle", book.title)
+                    put("bookFormat", book.format)
+                    put("pageIndex", bm.pageIndex)
+                    put("chapterTitle", bm.chapterTitle)
+                    put("excerpt", bm.excerpt)
+                    put("createdAt", bm.createdAt)
+                }
+            )
+        }
+        root.put("bookmarks", bmArr)
+
+        val hlArr = JSONArray()
+        highlights.forEach { hl ->
+            val book = bookById[hl.bookId] ?: return@forEach
+            hlArr.put(
+                JSONObject().apply {
+                    put("bookTitle", book.title)
+                    put("bookFormat", book.format)
+                    put("pageIndex", hl.pageIndex)
+                    put("startOffset", hl.startOffset)
+                    put("endOffset", hl.endOffset)
+                    put("quoteText", hl.quoteText)
+                    put("colorIndex", hl.colorIndex)
+                    put("note", hl.note)
+                    put("chapterTitle", hl.chapterTitle)
+                    put("createdAt", hl.createdAt)
+                }
+            )
+        }
+        root.put("highlights", hlArr)
+
+        root.toString(2)
+    }
+
+    suspend fun importOfflineBackupJson(rawJson: String): Result<String> = withContext(Dispatchers.IO) {
+        runCatching {
+            require(rawJson.length <= 5_000_000) { "Backup file is too large." }
+            val root = JSONObject(rawJson)
+            require(root.has("wordBank") || root.has("highlights") || root.has("bookmarks") || root.has("readingStats")) {
+                "Invalid Epos backup JSON file."
+            }
+
+            var wordsRestored = 0
+            var statsRestored = 0
+            var bookmarksRestored = 0
+            var highlightsRestored = 0
+
+            // 1. Word Bank
+            root.optJSONArray("wordBank")?.let { arr ->
+                for (i in 0 until arr.length()) {
+                    val obj = arr.optJSONObject(i) ?: continue
+                    val source = obj.optString("sourceText").trim()
+                    val translated = obj.optString("translatedText").trim()
+                    val targetLang = obj.optString("targetLanguage", "hi").trim().ifBlank { "hi" }
+                    if (source.isBlank() || translated.isBlank()) continue
+                    val normKey = obj.optString("normalizedKey").trim()
+                        .ifBlank { "$targetLang|${source.lowercase()}" }
+                    val existing = translationDao.findByKey(normKey)
+                    if (existing != null) {
+                        if (!existing.isSavedToWordBank) {
+                            translationDao.setSavedToWordBank(existing.id, true)
+                            wordsRestored++
+                        }
+                    } else {
+                        translationDao.upsert(
+                            TranslationEntryEntity(
+                                normalizedKey = normKey,
+                                sourceText = source,
+                                translatedText = translated,
+                                sourceLanguage = obj.optString("sourceLanguage", "auto"),
+                                targetLanguage = targetLang,
+                                isSavedToWordBank = true,
+                                bookTitle = obj.optString("bookTitle", ""),
+                                createdAt = obj.optLong("createdAt", System.currentTimeMillis())
+                            )
+                        )
+                        wordsRestored++
+                    }
+                }
+            }
+
+            // 2. Reading Stats (merge keeping higher value per dateKey)
+            root.optJSONArray("readingStats")?.let { arr ->
+                for (i in 0 until arr.length()) {
+                    val obj = arr.optJSONObject(i) ?: continue
+                    val dateKey = obj.optString("dateKey").trim()
+                    if (!Regex("""^\d{4}-\d{2}-\d{2}$""").matches(dateKey)) continue
+                    val mins = obj.optInt("minutesRead", 0).coerceAtLeast(0)
+                    val pages = obj.optInt("pagesRead", 0).coerceAtLeast(0)
+                    val existing = activityDao.getByDate(dateKey)
+                    if (existing == null) {
+                        activityDao.upsert(ReadingActivityEntity(dateKey, mins, pages))
+                        statsRestored++
+                    } else if (mins > existing.minutesRead || pages > existing.pagesRead) {
+                        activityDao.upsert(
+                            existing.copy(
+                                minutesRead = maxOf(existing.minutesRead, mins),
+                                pagesRead = maxOf(existing.pagesRead, pages)
+                            )
+                        )
+                        statsRestored++
+                    }
+                }
+            }
+
+            // Match bookmarks & highlights against visible (non-hidden) books by title + format
+            val visibleBooks = bookDao.getVisibleBooksOnce()
+            fun findMatchingBook(title: String, format: String): BookEntity? {
+                val cleanTitle = title.trim().lowercase()
+                if (cleanTitle.isEmpty()) return null
+                return visibleBooks.firstOrNull {
+                    it.title.trim().lowercase() == cleanTitle && it.format.equals(format, ignoreCase = true)
+                } ?: visibleBooks.firstOrNull { it.title.trim().lowercase() == cleanTitle }
+            }
+
+            // 3. Bookmarks
+            root.optJSONArray("bookmarks")?.let { arr ->
+                for (i in 0 until arr.length()) {
+                    val obj = arr.optJSONObject(i) ?: continue
+                    val book = findMatchingBook(obj.optString("bookTitle"), obj.optString("bookFormat")) ?: continue
+                    val pageIdx = obj.optInt("pageIndex", 0).coerceAtLeast(0)
+                    if (bookmarkDao.getBookmarkAtPage(book.id, pageIdx) == null) {
+                        bookmarkDao.insertBookmark(
+                            BookmarkEntity(
+                                bookId = book.id,
+                                pageIndex = pageIdx,
+                                chapterTitle = obj.optString("chapterTitle", ""),
+                                excerpt = obj.optString("excerpt", "").take(120),
+                                createdAt = obj.optLong("createdAt", System.currentTimeMillis())
+                            )
+                        )
+                        bookmarksRestored++
+                    }
+                }
+            }
+
+            // 4. Highlights (deduplicate by bookId + pageIndex + quoteText)
+            val existingHighlights = highlightDao.getAllVisibleHighlightsOnce()
+            val hlKeys = existingHighlights.map { "${it.bookId}|${it.pageIndex}|${it.quoteText.trim()}" }.toMutableSet()
+            root.optJSONArray("highlights")?.let { arr ->
+                for (i in 0 until arr.length()) {
+                    val obj = arr.optJSONObject(i) ?: continue
+                    val book = findMatchingBook(obj.optString("bookTitle"), obj.optString("bookFormat")) ?: continue
+                    val quote = obj.optString("quoteText").trim()
+                    if (quote.isBlank()) continue
+                    val pageIdx = obj.optInt("pageIndex", 0).coerceAtLeast(0)
+                    val dedupKey = "${book.id}|$pageIdx|$quote"
+                    if (dedupKey in hlKeys) continue
+                    hlKeys.add(dedupKey)
+                    highlightDao.insertHighlight(
+                        HighlightEntity(
+                            bookId = book.id,
+                            pageIndex = pageIdx,
+                            startOffset = obj.optInt("startOffset", 0).coerceAtLeast(0),
+                            endOffset = obj.optInt("endOffset", quote.length).coerceAtLeast(0),
+                            quoteText = quote,
+                            colorIndex = obj.optInt("colorIndex", 0).coerceIn(0, 3),
+                            note = obj.optString("note", "").trim(),
+                            chapterTitle = obj.optString("chapterTitle", ""),
+                            createdAt = obj.optLong("createdAt", System.currentTimeMillis())
+                        )
+                    )
+                    highlightsRestored++
+                }
+            }
+
+            "Restored $wordsRestored words, $highlightsRestored highlights, $bookmarksRestored bookmarks, $statsRestored stat days"
+        }
     }
 
     private fun queryDisplayName(uri: Uri): String? {

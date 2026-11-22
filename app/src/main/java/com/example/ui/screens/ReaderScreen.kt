@@ -27,6 +27,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -42,14 +43,17 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.data.model.PageTurnStyle
 import com.example.engine.curl.PageCurlCanvas
 import com.example.engine.export.QuoteCardAndExport
 import com.example.ui.theme.LocalFolioPalette
 import com.example.ui.viewmodel.ReaderViewModel
+import kotlinx.coroutines.flow.SharedFlow
 
 @Composable
 fun ReaderScreen(
     viewModel: ReaderViewModel,
+    volumePageTurnEvents: SharedFlow<Int>,
     onNavigateBack: () -> Unit
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -62,6 +66,13 @@ fun ReaderScreen(
     val bottomInsetPx = WindowInsets.navigationBars.getBottom(density)
     var canvasSize by remember { mutableStateOf(IntSize.Zero) }
     var showGoToPageDialog by remember { mutableStateOf(false) }
+
+    // Collect hardware Volume Up/Down events when enabled in Settings
+    LaunchedEffect(volumePageTurnEvents) {
+        volumePageTurnEvents.collect { delta ->
+            viewModel.triggerHardwarePageTurn(delta)
+        }
+    }
 
     // Track active foreground Reader lifecycle so Reading Stats & Ambient Sound run ONLY while actively reading
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -150,48 +161,95 @@ fun ReaderScreen(
             .fillMaxSize()
             .background(palette.background)
     ) {
-        // 1. Full-Screen Zero-Clutter 60fps 2D Canvas Page-Curl Engine (INTACT + Layered Gestures)
+        // 1. Full-Screen Reader Viewport: Continuous Vertical Scroll OR 60fps 2D Canvas (Curl / Slide / Fade / Instant)
         val selectionOverlay = remember(uiState.activeSelection) {
             viewModel.buildSelectionOverlay()
         }
 
-        PageCurlCanvas(
-            currentBitmap = uiState.currentBitmap,
-            prevBitmap = uiState.prevBitmap,
-            nextBitmap = uiState.nextBitmap,
-            currentPage = uiState.currentPage,
-            totalPages = uiState.totalPages,
-            palette = palette,
-            pageStiffness = settings.pageStiffness,
-            selectionOverlay = selectionOverlay,
-            searchGlowRects = uiState.searchGlowRects,
-            searchGlowAlpha = uiState.searchGlowAlpha,
-            onSizeReady = { size ->
-                canvasSize = size
-                viewModel.onViewportReady(
-                    size = size,
-                    density = density.density,
-                    topInset = topInsetPx,
-                    bottomInset = bottomInsetPx
-                )
-            },
-            onPageTurnCommit = { delta -> viewModel.commitPageTurn(delta) },
-            onPlayRustle = { vel -> viewModel.playPaperRustle(vel) },
-            onPageLandHaptic = { viewModel.triggerPageLandHaptic() },
-            onCenterTap = { viewModel.toggleOverlay() },
-            onLongPressAt = { offset -> viewModel.onLongPressAt(offset) },
-            onTapAtRestingPage = { offset -> viewModel.onTapAtRestingPage(offset) },
-            onDragSelectionHandle = { isStart, pos -> viewModel.onDragSelectionHandle(isStart, pos) },
-            oneHandedTapMode = settings.oneHandedTapMode,
-            autoFlipTrigger = uiState.autoFlipTrigger,
-            onLeftEdgeBrightnessDrag = { delta -> viewModel.onLeftEdgeBrightnessDrag(delta) },
-            onLeftEdgeBrightnessEnd = { viewModel.onLeftEdgeBrightnessEnd() },
-            isPdf = uiState.isPdf,
-            pdfZoomScale = uiState.pdfZoomScale,
-            pdfPanOffset = uiState.pdfPanOffset,
-            onPdfPinchTransform = { scale, pan -> viewModel.onPdfPinchTransform(scale, pan) },
-            modifier = Modifier.fillMaxSize()
-        )
+        if (settings.pageTurnStyle == PageTurnStyle.VERTICAL_SCROLL) {
+            val verticalRenderSig = remember(
+                settings.themeMode,
+                settings.fontStyle,
+                settings.fontSizeSp,
+                settings.lineSpacing,
+                settings.marginDp,
+                settings.bionicModeEnabled,
+                settings.bionicIntensity,
+                settings.paperGrainEnabled,
+                settings.pdfAutoCropEnabled,
+                settings.footerShowChapterTime,
+                uiState.highlights.size,
+                uiState.totalPages
+            ) {
+                "${settings.themeMode}_${settings.fontStyle}_${settings.fontSizeSp}_${settings.lineSpacing}_" +
+                    "${settings.marginDp}_${settings.bionicModeEnabled}_${settings.bionicIntensity}_" +
+                    "${settings.paperGrainEnabled}_${settings.pdfAutoCropEnabled}_${settings.footerShowChapterTime}_" +
+                    "${uiState.highlights.size}_${uiState.totalPages}"
+            }
+            VerticalScrollReaderView(
+                totalPages = uiState.totalPages,
+                initialPage = uiState.currentPage,
+                jumpTrigger = uiState.verticalScrollJumpTrigger,
+                renderSignature = verticalRenderSig,
+                bottomInsetPx = bottomInsetPx,
+                onSizeReady = { size ->
+                    canvasSize = size
+                    viewModel.onViewportReady(
+                        size = size,
+                        density = density.density,
+                        topInset = topInsetPx,
+                        bottomInset = bottomInsetPx
+                    )
+                },
+                loadPageBitmap = { idx -> viewModel.getBitmapForVerticalScroll(idx) },
+                onVisiblePageChanged = { idx -> viewModel.onVerticalScrollPageChanged(idx) },
+                onCenterTap = { viewModel.toggleOverlay() },
+                onFooterTap = { viewModel.toggleFooterTimeMode() },
+                modifier = Modifier.fillMaxSize()
+            )
+        } else {
+            PageCurlCanvas(
+                currentBitmap = uiState.currentBitmap,
+                prevBitmap = uiState.prevBitmap,
+                nextBitmap = uiState.nextBitmap,
+                currentPage = uiState.currentPage,
+                totalPages = uiState.totalPages,
+                palette = palette,
+                pageStiffness = settings.pageStiffness,
+                selectionOverlay = selectionOverlay,
+                searchGlowRects = uiState.searchGlowRects,
+                searchGlowAlpha = uiState.searchGlowAlpha,
+                onSizeReady = { size ->
+                    canvasSize = size
+                    viewModel.onViewportReady(
+                        size = size,
+                        density = density.density,
+                        topInset = topInsetPx,
+                        bottomInset = bottomInsetPx
+                    )
+                },
+                onPageTurnCommit = { delta -> viewModel.commitPageTurn(delta) },
+                onPlayRustle = { vel -> viewModel.playPaperRustle(vel) },
+                onPageLandHaptic = { viewModel.triggerPageLandHaptic() },
+                onCenterTap = { viewModel.toggleOverlay() },
+                onLongPressAt = { offset -> viewModel.onLongPressAt(offset) },
+                onTapAtRestingPage = { offset -> viewModel.onTapAtRestingPage(offset) },
+                onDragSelectionHandle = { isStart, pos -> viewModel.onDragSelectionHandle(isStart, pos) },
+                oneHandedTapMode = settings.oneHandedTapMode,
+                autoFlipTrigger = uiState.autoFlipTrigger,
+                onLeftEdgeBrightnessDrag = { delta -> viewModel.onLeftEdgeBrightnessDrag(delta) },
+                onLeftEdgeBrightnessEnd = { viewModel.onLeftEdgeBrightnessEnd() },
+                isPdf = uiState.isPdf,
+                pdfZoomScale = uiState.pdfZoomScale,
+                pdfPanOffset = uiState.pdfPanOffset,
+                onPdfPinchTransform = { scale, pan -> viewModel.onPdfPinchTransform(scale, pan) },
+                pageTurnStyle = settings.pageTurnStyle,
+                externalTurnTrigger = uiState.hardwareTurnTrigger,
+                bottomInsetPx = bottomInsetPx,
+                onFooterTap = { viewModel.toggleFooterTimeMode() },
+                modifier = Modifier.fillMaxSize()
+            )
+        }
 
         // 1b. Warmth / Blue-Light Amber Filter Overlay (non-touch-blocking)
         if (settings.warmthFilter > 0.01f) {
@@ -325,18 +383,20 @@ fun ReaderScreen(
                 .padding(top = 84.dp)
         )
 
-        // 2i. Subtle Corner Live Reading Session Timer Pill (e.g., "14:32")
+        // 2i. Compact Draggable Live Reading Session Timer Pill (remembers last dragged position)
         ReadingSessionTimerPill(
             timer = uiState.sessionTimer,
             visible = !uiState.isOverlayVisible && uiState.fullPageTranslation == null,
-            onClick = { viewModel.openSessionTimerSheet(true) },
-            modifier = Modifier
-                .align(Alignment.TopEnd)
-                .statusBarsPadding()
-                .padding(top = 10.dp, end = 14.dp)
+            containerSize = canvasSize,
+            topInsetPx = topInsetPx,
+            bottomInsetPx = bottomInsetPx,
+            savedPosX = settings.timerPillPosX,
+            savedPosY = settings.timerPillPosY,
+            onPositionSaved = { nx, ny -> viewModel.saveTimerPillPosition(nx, ny) },
+            onClick = { viewModel.openSessionTimerSheet(true) }
         )
 
-        // 2j. Unobtrusive Corner 1-Tap Full-Page Translation Button (default OFF; enabled in settings)
+        // 2j. Compact Draggable 1-Tap Full-Page Translation Pill (remembers last dragged position)
         FloatingTranslatePagePill(
             visible = settings.fullPageTranslateEnabled &&
                 !uiState.isOverlayVisible &&
@@ -344,11 +404,13 @@ fun ReaderScreen(
                 uiState.activeSelection == null &&
                 uiState.activeTranslation == null,
             targetLanguage = settings.defaultTargetLanguage,
-            onClick = { viewModel.translateCurrentPage() },
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .navigationBarsPadding()
-                .padding(end = 16.dp, bottom = 26.dp)
+            containerSize = canvasSize,
+            topInsetPx = topInsetPx,
+            bottomInsetPx = bottomInsetPx,
+            savedPosX = settings.translatePillPosX,
+            savedPosY = settings.translatePillPosY,
+            onPositionSaved = { nx, ny -> viewModel.saveTranslatePillPosition(nx, ny) },
+            onClick = { viewModel.translateCurrentPage() }
         )
 
         // 3. Temporary 5-Second "Return to Page X" Pill (INTACT)
@@ -388,16 +450,16 @@ fun ReaderScreen(
             }
         }
 
-        // 5. Progressive Disclosure Frosted-Glass Top Bar (with Timer, Pin, and optional Full-Page Translate)
+        // 5. Clean 95% Opaque Top Bar (1-Tap Day/Night, Timer, Pin, Search, Notebook, Bookmark)
         ReaderTopBar(
             visible = uiState.isOverlayVisible && uiState.fullPageTranslation == null,
-            title = uiState.book?.title.orEmpty(),
-            chapterSubtitle = uiState.currentChapterTitle,
+            isDarkTheme = palette.isDark,
             isBookmarked = uiState.isCurrentPageBookmarked,
             isPinned = uiState.pinnedPageIndex == uiState.currentPage,
             isSessionTimerActive = uiState.sessionTimer.isActivePillVisible,
             showFullPageTranslateAction = settings.fullPageTranslateEnabled,
             onBack = onNavigateBack,
+            onToggleDayNight = { viewModel.toggleQuickDayNightTheme() },
             onOpenSessionTimer = { viewModel.openSessionTimerSheet(true) },
             onTranslateFullPage = { viewModel.translateCurrentPage() },
             onTogglePin = { viewModel.togglePinCurrentPage() },

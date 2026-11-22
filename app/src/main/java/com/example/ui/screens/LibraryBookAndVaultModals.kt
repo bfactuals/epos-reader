@@ -47,6 +47,8 @@ import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.FloatingActionButtonDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -149,131 +151,55 @@ fun PrivateShelfScreen(
             .fillMaxSize()
             .testTag("private_shelf_fullscreen")
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .statusBarsPadding()
-                .navigationBarsPadding()
-        ) {
-            // Editorial Private Shelf Header
-            Row(
+        Box(modifier = Modifier.fillMaxSize()) {
+            Column(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(start = 20.dp, end = 16.dp, top = 16.dp, bottom = 12.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+                    .fillMaxSize()
+                    .statusBarsPadding()
+                    .navigationBarsPadding()
             ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Surface(
-                        shape = RoundedCornerShape(10.dp),
-                        color = palette.accent.copy(alpha = 0.14f),
-                        border = BorderStroke(0.75.dp, palette.accent.copy(alpha = 0.45f))
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            Icon(
-                                imageVector = FolioIcons.Lock,
-                                contentDescription = null,
-                                tint = palette.accent,
-                                modifier = Modifier.size(14.dp)
-                            )
-                            Text(
-                                text = "Private Shelf",
-                                style = MaterialTheme.typography.titleMedium.copy(
-                                    fontFamily = FontFamily.Serif,
-                                    fontWeight = FontWeight.Medium
-                                ),
-                                color = palette.text
-                            )
-                        }
-                    }
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = if (vaultBooks.size == 1) "1 hidden volume · Zero-trace"
-                        else "${vaultBooks.size} hidden volumes · Zero-trace",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = palette.textMuted
-                    )
-                }
-
+                // Clean Minimalist Private Shelf Header (Badge on left, Lock & Exit on right)
                 Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 20.dp, end = 16.dp, top = 16.dp, bottom = 12.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // Clean `+` menu: Import Directly or Move from Library
-                    Box {
+                    Column(modifier = Modifier.weight(1f)) {
                         Surface(
-                            onClick = { showAddMenu = true },
-                            shape = CircleShape,
-                            color = palette.text,
-                            contentColor = palette.background,
-                            modifier = Modifier
-                                .size(42.dp)
-                                .testTag("vault_add_menu_button")
+                            shape = RoundedCornerShape(10.dp),
+                            color = palette.accent.copy(alpha = 0.14f),
+                            border = BorderStroke(0.75.dp, palette.accent.copy(alpha = 0.45f))
                         ) {
-                            Box(contentAlignment = Alignment.Center) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
                                 Icon(
-                                    imageVector = Icons.Rounded.Add,
-                                    contentDescription = "Add to Private Shelf",
-                                    modifier = Modifier.size(20.dp)
+                                    imageVector = FolioIcons.Lock,
+                                    contentDescription = null,
+                                    tint = palette.accent,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Text(
+                                    text = "Private Shelf",
+                                    style = MaterialTheme.typography.titleMedium.copy(
+                                        fontFamily = FontFamily.Serif,
+                                        fontWeight = FontWeight.Medium
+                                    ),
+                                    color = palette.text
                                 )
                             }
                         }
-
-                        DropdownMenu(
-                            expanded = showAddMenu,
-                            onDismissRequest = { showAddMenu = false },
-                            containerColor = palette.surfaceGlass,
-                            border = BorderStroke(0.75.dp, palette.divider),
-                            shape = RoundedCornerShape(14.dp)
-                        ) {
-                            DropdownMenuItem(
-                                text = {
-                                    Column {
-                                        Text(
-                                            text = "Import Directly",
-                                            color = palette.text,
-                                            style = MaterialTheme.typography.bodyMedium
-                                        )
-                                        Text(
-                                            text = "Pick EPUB, PDF, or TXT into Private Shelf",
-                                            color = palette.textMuted,
-                                            style = MaterialTheme.typography.labelSmall
-                                        )
-                                    }
-                                },
-                                onClick = {
-                                    showAddMenu = false
-                                    onImportToVault()
-                                },
-                                modifier = Modifier.testTag("vault_import_direct_option")
-                            )
-                            DropdownMenuItem(
-                                text = {
-                                    Column {
-                                        Text(
-                                            text = "Move from Library",
-                                            color = palette.text,
-                                            style = MaterialTheme.typography.bodyMedium
-                                        )
-                                        Text(
-                                            text = "Select books from your main shelf to hide",
-                                            color = palette.textMuted,
-                                            style = MaterialTheme.typography.labelSmall
-                                        )
-                                    }
-                                },
-                                onClick = {
-                                    showAddMenu = false
-                                    selectedToMove = emptySet()
-                                    showMoveChecklist = true
-                                },
-                                modifier = Modifier.testTag("vault_move_from_library_option")
-                            )
-                        }
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = if (vaultBooks.size == 1) "1 hidden volume · Zero-trace"
+                            else "${vaultBooks.size} hidden volumes · Zero-trace",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = palette.textMuted
+                        )
                     }
 
                     OutlinedButton(
@@ -298,7 +224,6 @@ fun PrivateShelfScreen(
                         )
                     }
                 }
-            }
 
             HorizontalDivider(
                 color = palette.divider,
@@ -446,7 +371,7 @@ fun PrivateShelfScreen(
                         )
                         Spacer(modifier = Modifier.height(6.dp))
                         Text(
-                            text = "Tap + above to import directly or move volumes from your Library. Long-press any book cover here to manage or restore it.",
+                            text = "Tap + below to import directly or move volumes from your Library. Long-press any book cover here to manage or restore it.",
                             style = MaterialTheme.typography.bodyMedium,
                             color = palette.textMuted,
                             textAlign = TextAlign.Center
@@ -461,7 +386,7 @@ fun PrivateShelfScreen(
                         start = 20.dp,
                         end = 20.dp,
                         top = 18.dp,
-                        bottom = 36.dp
+                        bottom = 96.dp
                     ),
                     horizontalArrangement = Arrangement.spacedBy(hSpacing),
                     verticalArrangement = Arrangement.spacedBy(vSpacing),
@@ -475,6 +400,86 @@ fun PrivateShelfScreen(
                             gridColumns = safeCols,
                             onClick = { onOpenBook(book.id) },
                             onLongClick = { managingPrivateBook = book }
+                        )
+                    }
+                }
+            }
+            }
+
+            // Bottom-Right Circular `+` FAB matching Main Library (Import Directly / Move from Library)
+            if (!showMoveChecklist) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .navigationBarsPadding()
+                        .padding(end = 20.dp, bottom = 20.dp)
+                ) {
+                    FloatingActionButton(
+                        onClick = { showAddMenu = true },
+                        shape = CircleShape,
+                        containerColor = palette.text,
+                        contentColor = palette.background,
+                        elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 4.dp),
+                        modifier = Modifier
+                            .size(56.dp)
+                            .testTag("vault_add_menu_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Add,
+                            contentDescription = "Add to Private Shelf",
+                            modifier = Modifier.size(26.dp)
+                        )
+                    }
+
+                    DropdownMenu(
+                        expanded = showAddMenu,
+                        onDismissRequest = { showAddMenu = false },
+                        containerColor = palette.surfaceGlass,
+                        border = BorderStroke(0.75.dp, palette.divider),
+                        shape = RoundedCornerShape(14.dp)
+                    ) {
+                        DropdownMenuItem(
+                            text = {
+                                Column {
+                                    Text(
+                                        text = "Import Directly",
+                                        color = palette.text,
+                                        style = MaterialTheme.typography.bodyMedium
+                                    )
+                                    Text(
+                                        text = "Pick EPUB, PDF, or TXT into Private Shelf",
+                                        color = palette.textMuted,
+                                        style = MaterialTheme.typography.labelSmall
+                                    )
+                                }
+                            },
+                            onClick = {
+                                showAddMenu = false
+                                onImportToVault()
+                            },
+                            modifier = Modifier.testTag("vault_import_direct_option")
+                        )
+                        DropdownMenuItem(
+                            text = {
+                                Column {
+                                    Text(
+                                        text = "Move from Library",
+                                        color = palette.text,
+                                        style = MaterialTheme.typography.bodyMedium
+                                    )
+                                    Text(
+                                        text = "Select books from your main shelf to hide",
+                                        color = palette.textMuted,
+                                        style = MaterialTheme.typography.labelSmall
+                                    )
+                                }
+                            },
+                            onClick = {
+                                showAddMenu = false
+                                selectedToMove = emptySet()
+                                showMoveChecklist = true
+                            },
+                            modifier = Modifier.testTag("vault_move_from_library_option")
                         )
                     }
                 }

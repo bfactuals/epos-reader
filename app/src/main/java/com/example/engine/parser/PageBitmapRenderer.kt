@@ -84,7 +84,8 @@ class PageBitmapRenderer {
         bottomInsetPx: Int,
         settings: ReaderSettings,
         highlights: List<HighlightEntity>,
-        isFeaturedStory: Boolean = false
+        isFeaturedStory: Boolean = false,
+        footerTimeText: String? = null
     ): Bitmap {
         val safeW = widthPx.coerceAtLeast(1)
         val safeH = heightPx.coerceAtLeast(1)
@@ -135,7 +136,11 @@ class PageBitmapRenderer {
         }
 
         // 4. Highlights & Whisper-Note Underlines underneath text
-        val styledBody = Paginator.formatDisplayText(page.bodyText, settings.bionicModeEnabled)
+        val styledBody = Paginator.formatDisplayText(
+            page.bodyText,
+            settings.bionicModeEnabled,
+            settings.bionicIntensity
+        )
         val bodyLayout = Paginator.buildStaticLayout(
             styledBody,
             bodyPaint,
@@ -190,6 +195,7 @@ class PageBitmapRenderer {
             pageIndex = page.pageIndex,
             totalPages = totalPages,
             estimatedMinutesLeft = estimatedMinutesLeft,
+            footerTimeText = footerTimeText,
             widthPx = safeW,
             heightPx = safeH,
             bottomInsetPx = bottomInsetPx,
@@ -211,7 +217,8 @@ class PageBitmapRenderer {
         topInsetPx: Int,
         bottomInsetPx: Int,
         settings: ReaderSettings,
-        highlights: List<HighlightEntity>
+        highlights: List<HighlightEntity>,
+        footerTimeText: String? = null
     ): Bitmap {
         val safeW = widthPx.coerceAtLeast(1)
         val safeH = heightPx.coerceAtLeast(1)
@@ -289,6 +296,7 @@ class PageBitmapRenderer {
             pageIndex = pageIndex,
             totalPages = totalPages,
             estimatedMinutesLeft = estimatedMinutesLeft,
+            footerTimeText = footerTimeText,
             widthPx = safeW,
             heightPx = safeH,
             bottomInsetPx = bottomInsetPx,
@@ -378,6 +386,16 @@ class PageBitmapRenderer {
                     )
                 )
             }
+            ReaderThemeMode.AMOLED -> {
+                ColorMatrix(
+                    floatArrayOf(
+                        -0.86f, 0f, 0f, 0f, 220f,
+                        0f, -0.85f, 0f, 0f, 218f,
+                        0f, 0f, -0.82f, 0f, 210f,
+                        0f, 0f, 0f, 1f, 0f
+                    )
+                )
+            }
         }
         return ColorMatrixColorFilter(matrix)
     }
@@ -387,6 +405,7 @@ class PageBitmapRenderer {
         pageIndex: Int,
         totalPages: Int,
         estimatedMinutesLeft: Int,
+        footerTimeText: String?,
         widthPx: Int,
         heightPx: Int,
         bottomInsetPx: Int,
@@ -395,11 +414,11 @@ class PageBitmapRenderer {
     ) {
         val safeTotal = totalPages.coerceAtLeast(1)
         val pct = if (safeTotal <= 1) 100 else ((pageIndex.toFloat() / (safeTotal - 1)) * 100f).roundToInt().coerceIn(0, 100)
-        val timePart = if (estimatedMinutesLeft <= 0) "done" else "${estimatedMinutesLeft}m left"
+        val timePart = footerTimeText ?: if (estimatedMinutesLeft <= 0) "done" else "${estimatedMinutesLeft}m left"
         val label = "${pageIndex + 1} / $safeTotal  ·  $pct%  ·  $timePart"
         val footerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = mutedColor
-            alpha = 135
+            alpha = 140
             textSize = 10.5f * density
             typeface = Typeface.SANS_SERIF
             textAlign = Paint.Align.CENTER

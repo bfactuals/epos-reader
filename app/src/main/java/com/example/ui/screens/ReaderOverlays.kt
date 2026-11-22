@@ -12,9 +12,12 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -68,7 +71,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.R
 import com.example.data.model.AmbientSoundMode
+import com.example.data.model.PageTurnStyle
 import com.example.data.model.ReaderSettings
+import com.example.ui.theme.AmoledBg
 import com.example.ui.theme.FolioIcons
 import com.example.ui.theme.HighlightColorNames
 import com.example.ui.theme.HighlightColors
@@ -83,18 +88,18 @@ import com.example.ui.viewmodel.ReadingSessionTimerState
 import kotlin.math.roundToInt
 
 /**
- * Frosted-Glass Top Bar shown on center-60% tap (includes Quick-Peek Pin icon).
+ * Clean 95% Opaque Top Bar shown on center tap — balanced icon-only spacing with 1-tap Day/Night toggle.
  */
 @Composable
 fun ReaderTopBar(
     visible: Boolean,
-    title: String,
-    chapterSubtitle: String,
+    isDarkTheme: Boolean,
     isBookmarked: Boolean,
     isPinned: Boolean,
     isSessionTimerActive: Boolean,
     showFullPageTranslateAction: Boolean,
     onBack: () -> Unit,
+    onToggleDayNight: () -> Unit,
     onOpenSessionTimer: () -> Unit,
     onTranslateFullPage: () -> Unit,
     onTogglePin: () -> Unit,
@@ -120,8 +125,9 @@ fun ReaderTopBar(
                 modifier = Modifier
                     .fillMaxWidth()
                     .statusBarsPadding()
-                    .padding(horizontal = 6.dp, vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically
+                    .padding(horizontal = 8.dp, vertical = 5.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 IconButton(
                     onClick = onBack,
@@ -136,117 +142,110 @@ fun ReaderTopBar(
                     )
                 }
 
-                Column(
-                    modifier = Modifier
-                        .weight(1f)
-                        .padding(horizontal = 4.dp)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
-                    Text(
-                        text = title,
-                        style = MaterialTheme.typography.titleMedium.copy(
-                            fontFamily = FontFamily.Serif,
-                            fontWeight = FontWeight.Medium
-                        ),
-                        color = palette.text,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    if (chapterSubtitle.isNotBlank()) {
-                        Text(
-                            text = chapterSubtitle,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = palette.textMuted,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                }
-
-                if (showFullPageTranslateAction) {
                     IconButton(
-                        onClick = onTranslateFullPage,
+                        onClick = onToggleDayNight,
                         modifier = Modifier
                             .size(44.dp)
-                            .testTag("reader_topbar_translate_page_button")
+                            .testTag("reader_day_night_toggle")
                     ) {
                         Icon(
-                            imageVector = FolioIcons.Translate,
-                            contentDescription = "Translate current page",
-                            tint = palette.accent,
+                            imageVector = if (isDarkTheme) FolioIcons.LightMode else FolioIcons.DarkMode,
+                            contentDescription = if (isDarkTheme) "Switch to Day theme" else "Switch to Dark theme",
+                            tint = if (isDarkTheme) palette.accent else palette.text,
                             modifier = Modifier.size(20.dp)
                         )
                     }
-                }
 
-                IconButton(
-                    onClick = onOpenSessionTimer,
-                    modifier = Modifier
-                        .size(44.dp)
-                        .testTag("reader_timer_button")
-                ) {
-                    Icon(
-                        imageVector = FolioIcons.Timer,
-                        contentDescription = "Reading session timer",
-                        tint = if (isSessionTimerActive) palette.accent else palette.text,
-                        modifier = Modifier.size(20.dp)
-                    )
-                }
+                    if (showFullPageTranslateAction) {
+                        IconButton(
+                            onClick = onTranslateFullPage,
+                            modifier = Modifier
+                                .size(44.dp)
+                                .testTag("reader_topbar_translate_page_button")
+                        ) {
+                            Icon(
+                                imageVector = FolioIcons.Translate,
+                                contentDescription = "Translate current page",
+                                tint = palette.accent,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    }
 
-                IconButton(
-                    onClick = onTogglePin,
-                    modifier = Modifier
-                        .size(44.dp)
-                        .testTag("reader_pin_button")
-                ) {
-                    Icon(
-                        imageVector = FolioIcons.Pin,
-                        contentDescription = if (isPinned) "Unpin page" else "Pin page for quick peek",
-                        tint = if (isPinned) palette.accent else palette.text,
-                        modifier = Modifier.size(20.dp)
-                    )
-                }
+                    IconButton(
+                        onClick = onOpenSessionTimer,
+                        modifier = Modifier
+                            .size(44.dp)
+                            .testTag("reader_timer_button")
+                    ) {
+                        Icon(
+                            imageVector = FolioIcons.Timer,
+                            contentDescription = "Reading session timer",
+                            tint = if (isSessionTimerActive) palette.accent else palette.text,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
 
-                IconButton(
-                    onClick = onOpenSearch,
-                    modifier = Modifier
-                        .size(44.dp)
-                        .testTag("reader_search_button")
-                ) {
-                    Icon(
-                        imageVector = Icons.Outlined.Search,
-                        contentDescription = stringResource(R.string.reader_search),
-                        tint = palette.text
-                    )
-                }
+                    IconButton(
+                        onClick = onTogglePin,
+                        modifier = Modifier
+                            .size(44.dp)
+                            .testTag("reader_pin_button")
+                    ) {
+                        Icon(
+                            imageVector = FolioIcons.Pin,
+                            contentDescription = if (isPinned) "Unpin page" else "Pin page for quick peek",
+                            tint = if (isPinned) palette.accent else palette.text,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
 
-                IconButton(
-                    onClick = onOpenNotebook,
-                    modifier = Modifier
-                        .size(44.dp)
-                        .testTag("reader_notebook_button")
-                ) {
-                    Icon(
-                        imageVector = FolioIcons.NotebookList,
-                        contentDescription = stringResource(R.string.reader_notebook),
-                        tint = palette.text
-                    )
-                }
+                    IconButton(
+                        onClick = onOpenSearch,
+                        modifier = Modifier
+                            .size(44.dp)
+                            .testTag("reader_search_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.Search,
+                            contentDescription = stringResource(R.string.reader_search),
+                            tint = palette.text
+                        )
+                    }
 
-                IconButton(
-                    onClick = onToggleBookmark,
-                    modifier = Modifier
-                        .size(44.dp)
-                        .testTag("reader_bookmark_toggle")
-                ) {
-                    Icon(
-                        imageVector = if (isBookmarked) FolioIcons.BookmarkFilled else FolioIcons.BookmarkOutline,
-                        contentDescription = if (isBookmarked) {
-                            stringResource(R.string.reader_bookmark_remove)
-                        } else {
-                            stringResource(R.string.reader_bookmark_add)
-                        },
-                        tint = if (isBookmarked) palette.accent else palette.text
-                    )
+                    IconButton(
+                        onClick = onOpenNotebook,
+                        modifier = Modifier
+                            .size(44.dp)
+                            .testTag("reader_notebook_button")
+                    ) {
+                        Icon(
+                            imageVector = FolioIcons.NotebookList,
+                            contentDescription = stringResource(R.string.reader_notebook),
+                            tint = palette.text
+                        )
+                    }
+
+                    IconButton(
+                        onClick = onToggleBookmark,
+                        modifier = Modifier
+                            .size(44.dp)
+                            .testTag("reader_bookmark_toggle")
+                    ) {
+                        Icon(
+                            imageVector = if (isBookmarked) FolioIcons.BookmarkFilled else FolioIcons.BookmarkOutline,
+                            contentDescription = if (isBookmarked) {
+                                stringResource(R.string.reader_bookmark_remove)
+                            } else {
+                                stringResource(R.string.reader_bookmark_add)
+                            },
+                            tint = if (isBookmarked) palette.accent else palette.text
+                        )
+                    }
                 }
             }
         }
@@ -360,11 +359,11 @@ fun ReaderBottomSheetBar(
                         .navigationBarsPadding()
                         .padding(horizontal = 20.dp, vertical = 8.dp)
                 ) {
-                    // Drag Handle (swipe up/down or tap to toggle Settings Sheet)
+                    // Sleek Slim Drag Handle (swipe up/down or tap to toggle Settings Sheet)
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(28.dp)
+                            .height(22.dp)
                             .pointerInput(isExpanded) {
                                 detectVerticalDragGestures { _, dragAmount ->
                                     if (dragAmount < -10f && !isExpanded) onSetExpanded(true)
@@ -377,37 +376,34 @@ fun ReaderBottomSheetBar(
                     ) {
                         Box(
                             modifier = Modifier
-                                .width(38.dp)
-                                .height(4.dp)
+                                .width(34.dp)
+                                .height(3.5.dp)
                                 .clip(RoundedCornerShape(2.dp))
-                                .background(palette.textMuted.copy(alpha = 0.4f))
+                                .background(palette.textMuted.copy(alpha = 0.42f))
                         )
                     }
 
-                    // Fast Page-Scrubber Row + Tappable "X / Y" Go-to-Page Pill
+                    // Slimmer, Sleeker Page-Scrubber Row + Tappable "X / Y" Go-to-Page Pill
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 2.dp),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        Slider(
+                        SlimPageScrubber(
                             value = if (isScrubbing) scrubValue else currentPage.toFloat(),
+                            maxValue = safeMaxPage.toFloat(),
+                            enabled = totalPages > 1,
                             onValueChange = { v ->
                                 isScrubbing = true
                                 scrubValue = v
                             },
-                            onValueChangeFinished = {
-                                val target = scrubValue.roundToInt().coerceIn(0, (totalPages - 1).coerceAtLeast(0))
+                            onValueChangeFinished = { finalVal ->
+                                val target = finalVal.roundToInt().coerceIn(0, (totalPages - 1).coerceAtLeast(0))
                                 isScrubbing = false
                                 onScrubCommit(target)
                             },
-                            valueRange = 0f..safeMaxPage.toFloat(),
-                            enabled = totalPages > 1,
-                            colors = SliderDefaults.colors(
-                                thumbColor = palette.accent,
-                                activeTrackColor = palette.accent,
-                                inactiveTrackColor = palette.divider
-                            ),
                             modifier = Modifier
                                 .weight(1f)
                                 .testTag("reader_page_scrubber")
@@ -415,19 +411,19 @@ fun ReaderBottomSheetBar(
 
                         Surface(
                             onClick = onOpenGoToPage,
-                            shape = RoundedCornerShape(10.dp),
-                            color = palette.background.copy(alpha = 0.65f),
+                            shape = RoundedCornerShape(9.dp),
+                            color = palette.background.copy(alpha = 0.72f),
                             border = BorderStroke(0.75.dp, palette.divider),
                             modifier = Modifier.testTag("reader_go_to_page_trigger")
                         ) {
                             Text(
                                 text = "${previewPage + 1} / $totalPages",
-                                style = MaterialTheme.typography.labelMedium.copy(
+                                style = MaterialTheme.typography.labelSmall.copy(
                                     fontWeight = FontWeight.SemiBold
                                 ),
                                 color = palette.text,
                                 maxLines = 1,
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp)
+                                modifier = Modifier.padding(horizontal = 9.dp, vertical = 6.dp)
                             )
                         }
                     }
@@ -508,10 +504,10 @@ private fun AppearanceSettingsContent(
     onUpdateSettings: ((ReaderSettings) -> ReaderSettings) -> Unit
 ) {
     val palette = LocalFolioPalette.current
-    // 1. 3 Curated Themes: Paper, Sepia, Night
+    // 1. 4 Curated Themes: Paper, Sepia, Night, AMOLED Pure Black
     Row(
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(10.dp)
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
     ) {
         ThemeSwatchChip(
             label = stringResource(R.string.reader_theme_paper),
@@ -540,6 +536,55 @@ private fun AppearanceSettingsContent(
                 .weight(1f)
                 .testTag("theme_night_chip")
         )
+        ThemeSwatchChip(
+            label = "AMOLED",
+            swatchBg = AmoledBg,
+            selected = settings.themeMode == ReaderThemeMode.AMOLED,
+            onClick = { onUpdateSettings { it.copy(themeMode = ReaderThemeMode.AMOLED) } },
+            modifier = Modifier
+                .weight(1f)
+                .testTag("theme_amoled_chip")
+        )
+    }
+
+    // 1b. Page-Turn Style Selector (Curl, Slide, Fade, Instant, Vertical Scroll)
+    Spacer(modifier = Modifier.height(12.dp))
+    Text(
+        text = "Page-Turn Style",
+        style = MaterialTheme.typography.labelMedium,
+        color = palette.textMuted
+    )
+    Spacer(modifier = Modifier.height(6.dp))
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        listOf(PageTurnStyle.CURL, PageTurnStyle.SLIDE, PageTurnStyle.FADE).forEach { style ->
+            SmallOptionChip(
+                label = style.label,
+                selected = settings.pageTurnStyle == style,
+                onClick = { onUpdateSettings { it.copy(pageTurnStyle = style) } },
+                modifier = Modifier
+                    .weight(1f)
+                    .testTag("page_turn_style_${style.name.lowercase()}")
+            )
+        }
+    }
+    Spacer(modifier = Modifier.height(6.dp))
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        listOf(PageTurnStyle.INSTANT, PageTurnStyle.VERTICAL_SCROLL).forEach { style ->
+            SmallOptionChip(
+                label = style.label,
+                selected = settings.pageTurnStyle == style,
+                onClick = { onUpdateSettings { it.copy(pageTurnStyle = style) } },
+                modifier = Modifier
+                    .weight(1f)
+                    .testTag("page_turn_style_${style.name.lowercase()}")
+            )
+        }
     }
 
     // 2. Typography Controls (EPUB/TXT)
@@ -811,6 +856,27 @@ private fun ToolsSettingsContent(
             onCheckedChange = { on -> onUpdateSettings { it.copy(bionicModeEnabled = on) } },
             testTag = "tool_bionic_switch"
         )
+        // Progressive Disclosure: Bionic Boldness slider appears ONLY when Bionic Reading is ON
+        AnimatedVisibility(visible = settings.bionicModeEnabled) {
+            val intensityLabel = when {
+                settings.bionicIntensity < 0.42f -> "Light"
+                settings.bionicIntensity > 0.68f -> "Strong"
+                else -> "Medium"
+            }
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 6.dp, end = 2.dp, bottom = 4.dp)
+            ) {
+                CompactSliderRow(
+                    label = "Boldness",
+                    valueText = intensityLabel,
+                    value = settings.bionicIntensity,
+                    range = 0.25f..0.85f,
+                    onValueChange = { v -> onUpdateSettings { it.copy(bionicIntensity = v) } }
+                )
+            }
+        }
     } else {
         ToolSwitchRow(
             label = "PDF Auto-Crop",
@@ -1081,6 +1147,87 @@ private fun ToolSwitchRow(
 }
 
 @Composable
+private fun SlimPageScrubber(
+    value: Float,
+    maxValue: Float,
+    enabled: Boolean,
+    onValueChange: (Float) -> Unit,
+    onValueChangeFinished: (Float) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val palette = LocalFolioPalette.current
+    val safeMax = maxValue.coerceAtLeast(1f)
+    val fraction = (value / safeMax).coerceIn(0f, 1f)
+    var latestDragValue by remember(value) { mutableFloatStateOf(value) }
+
+    BoxWithConstraints(
+        modifier = modifier
+            .height(34.dp)
+            .pointerInput(enabled, safeMax) {
+                if (!enabled) return@pointerInput
+                detectTapGestures { offset ->
+                    val w = size.width.toFloat().coerceAtLeast(1f)
+                    val target = ((offset.x / w).coerceIn(0f, 1f)) * safeMax
+                    onValueChange(target)
+                    onValueChangeFinished(target)
+                }
+            }
+            .pointerInput(enabled, safeMax) {
+                if (!enabled) return@pointerInput
+                detectHorizontalDragGestures(
+                    onDragStart = { offset ->
+                        val w = size.width.toFloat().coerceAtLeast(1f)
+                        val v = ((offset.x / w).coerceIn(0f, 1f)) * safeMax
+                        latestDragValue = v
+                        onValueChange(v)
+                    },
+                    onHorizontalDrag = { change, _ ->
+                        change.consume()
+                        val w = size.width.toFloat().coerceAtLeast(1f)
+                        val v = ((change.position.x / w).coerceIn(0f, 1f)) * safeMax
+                        latestDragValue = v
+                        onValueChange(v)
+                    },
+                    onDragEnd = { onValueChangeFinished(latestDragValue) },
+                    onDragCancel = { onValueChangeFinished(latestDragValue) }
+                )
+            },
+        contentAlignment = Alignment.CenterStart
+    ) {
+        val trackWidth = maxWidth
+        val thumbSize = 14.dp
+        val travel = (trackWidth - thumbSize).coerceAtLeast(0.dp)
+        val thumbOffset = travel * fraction
+
+        // Slim 3dp inactive track
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(3.dp)
+                .clip(RoundedCornerShape(2.dp))
+                .background(palette.divider)
+        )
+        // Slim 3dp active fill
+        Box(
+            modifier = Modifier
+                .width(thumbOffset + thumbSize / 2)
+                .height(3.dp)
+                .clip(RoundedCornerShape(2.dp))
+                .background(palette.accent)
+        )
+        // Subtle 14dp thumb handle
+        Box(
+            modifier = Modifier
+                .offset(x = thumbOffset)
+                .size(thumbSize)
+                .clip(CircleShape)
+                .background(palette.accent)
+                .border(1.5.dp, palette.surface, CircleShape)
+        )
+    }
+}
+
+@Composable
 private fun ThemeSwatchChip(
     label: String,
     swatchBg: Color,
@@ -1091,31 +1238,35 @@ private fun ThemeSwatchChip(
     val palette = LocalFolioPalette.current
     Surface(
         onClick = onClick,
-        shape = RoundedCornerShape(12.dp),
-        color = if (selected) palette.accent.copy(alpha = 0.14f) else palette.background.copy(alpha = 0.65f),
+        shape = RoundedCornerShape(11.dp),
+        color = if (selected) palette.accent.copy(alpha = 0.16f) else palette.background.copy(alpha = 0.65f),
         border = BorderStroke(
             width = if (selected) 1.5.dp else 0.75.dp,
             color = if (selected) palette.accent else palette.divider
         ),
-        modifier = modifier.height(44.dp)
+        modifier = modifier.height(42.dp)
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.Center,
-            modifier = Modifier.padding(horizontal = 8.dp)
+            modifier = Modifier.padding(horizontal = 4.dp)
         ) {
             Box(
                 modifier = Modifier
-                    .size(16.dp)
+                    .size(13.dp)
                     .clip(CircleShape)
                     .background(swatchBg)
                     .border(0.75.dp, palette.divider, CircleShape)
             )
-            Spacer(modifier = Modifier.width(6.dp))
+            Spacer(modifier = Modifier.width(4.dp))
             Text(
                 text = label,
-                style = MaterialTheme.typography.labelLarge,
-                color = palette.text
+                style = MaterialTheme.typography.labelSmall.copy(
+                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium
+                ),
+                color = if (selected) palette.accent else palette.text,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
         }
     }

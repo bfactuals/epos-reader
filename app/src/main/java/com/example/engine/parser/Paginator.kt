@@ -101,21 +101,26 @@ data class PaginationResult(
 object Paginator {
 
     /**
-     * Subtly bolds the first 2-3 letters of each word for Bionic / Fast-Reading Mode (EPUB/TXT).
-     * Preserves exact character offsets for highlights, search, and selection.
+     * Subtly bolds the leading letters of each word for Bionic / Fast-Reading Mode (EPUB/TXT).
+     * Intensity (0.25f..0.85f) smoothly scales bold prefix length while preserving exact offsets.
      */
-    fun formatDisplayText(raw: String, bionicEnabled: Boolean): CharSequence {
+    fun formatDisplayText(
+        raw: String,
+        bionicEnabled: Boolean,
+        bionicIntensity: Float = 0.5f
+    ): CharSequence {
         if (!bionicEnabled || raw.isEmpty()) return raw
+        val intensity = bionicIntensity.coerceIn(0.25f, 0.85f)
+        val ratio = 0.24f + intensity * 0.46f // 0.355 (Light) -> 0.47 (Medium) -> 0.631 (Strong)
         val ssb = SpannableStringBuilder(raw)
         val wordRegex = Regex("""[A-Za-z\u00C0-\u024F]+""")
         wordRegex.findAll(raw).forEach { match ->
             val start = match.range.first
             val len = match.range.last - start + 1
-            val boldCount = when {
-                len <= 1 -> 0
-                len <= 3 -> 1
-                len <= 6 -> 2
-                else -> 3
+            val boldCount = if (len <= 1) {
+                0
+            } else {
+                kotlin.math.ceil(len * ratio).toInt().coerceIn(1, (len - 1).coerceAtLeast(1))
             }
             if (boldCount > 0) {
                 ssb.setSpan(
@@ -416,7 +421,11 @@ object Paginator {
             metrics.topY
         }
 
-        val styledBody = formatDisplayText(page.bodyText, settings.bionicModeEnabled && !page.isDedicationPage)
+        val styledBody = formatDisplayText(
+            page.bodyText,
+            settings.bionicModeEnabled && !page.isDedicationPage,
+            settings.bionicIntensity
+        )
         val bodyLayout = buildStaticLayout(
             styledBody,
             bodyPaint,

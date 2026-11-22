@@ -12,7 +12,8 @@ import androidx.compose.ui.graphics.Color
 enum class ReaderThemeMode(val label: String) {
     PAPER("Paper"),
     SEPIA("Sepia"),
-    NIGHT("Night")
+    NIGHT("Night"),
+    AMOLED("AMOLED")
 }
 
 enum class ReaderFontStyle(val label: String) {
@@ -74,10 +75,24 @@ val NightPalette = FolioPalette(
     isDark = true
 )
 
+val AmoledPalette = FolioPalette(
+    mode = ReaderThemeMode.AMOLED,
+    background = AmoledBg,
+    surface = AmoledSurface,
+    surfaceGlass = AmoledSurfaceGlass,
+    text = AmoledText,
+    textMuted = AmoledTextMuted,
+    accent = AmoledAccent,
+    divider = AmoledDivider,
+    pageBackside = AmoledBackside,
+    isDark = true
+)
+
 fun paletteFor(mode: ReaderThemeMode): FolioPalette = when (mode) {
     ReaderThemeMode.PAPER -> PaperPalette
     ReaderThemeMode.SEPIA -> SepiaPalette
     ReaderThemeMode.NIGHT -> NightPalette
+    ReaderThemeMode.AMOLED -> AmoledPalette
 }
 
 val LocalFolioPalette = staticCompositionLocalOf { PaperPalette }
