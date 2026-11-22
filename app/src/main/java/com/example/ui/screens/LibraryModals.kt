@@ -32,11 +32,15 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -216,8 +220,11 @@ fun SettingsAndAboutSheet(
     remoteConfig: RemoteAppConfig,
     hasSecretCode: Boolean,
     onSelectTheme: (ReaderThemeMode) -> Unit,
-    onSaveSecretCode: (String) -> Boolean,
-    onClearSecretCode: () -> Unit,
+    onSelectGridColumns: (Int) -> Unit,
+    onToggleFullPageTranslate: (Boolean) -> Unit,
+    onCreateSecretCode: (newCode: String, confirmCode: String) -> String?,
+    onChangeSecretCode: (currentCode: String, newCode: String, confirmCode: String) -> String?,
+    onRemoveSecretCode: (currentCode: String) -> String?,
     onSaveGeminiKey: (String) -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -225,11 +232,29 @@ fun SettingsAndAboutSheet(
     val context = LocalContext.current
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
-    var secretDraft by remember { mutableStateOf("") }
-    var showSecretPlain by remember { mutableStateOf(false) }
+    // Secret code strictly verified & masked state: 0 = idle, 1 = change, 2 = remove
+    var secretActionMode by remember(hasSecretCode) { mutableStateOf(0) }
+    var currentCodeDraft by remember { mutableStateOf("") }
+    var newCodeDraft by remember { mutableStateOf("") }
+    var confirmCodeDraft by remember { mutableStateOf("") }
+    var showCurrentPlain by remember { mutableStateOf(false) }
+    var showNewPlain by remember { mutableStateOf(false) }
+    var showConfirmPlain by remember { mutableStateOf(false) }
+    var secretError by remember { mutableStateOf<String?>(null) }
 
     var keyDraft by remember(settings.geminiApiKey) { mutableStateOf(settings.geminiApiKey) }
     var showKeyPlain by remember { mutableStateOf(false) }
+
+    fun resetSecretDrafts() {
+        currentCodeDraft = ""
+        newCodeDraft = ""
+        confirmCodeDraft = ""
+        showCurrentPlain = false
+        showNewPlain = false
+        showConfirmPlain = false
+        secretError = null
+        secretActionMode = 0
+    }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -428,10 +453,81 @@ fun SettingsAndAboutSheet(
 
             Spacer(modifier = Modifier.height(14.dp))
 
-            // 3. Zero-Trace Secret Shelf Code Setting
+            // 2b. Adjustable Shelf Layout / Grid Size (2x2, 3x3, 4x4)
             Surface(
                 shape = RoundedCornerShape(16.dp),
-                color = palette.background.copy(alpha = 0.68f),
+                color = palette.background.copy(alpha = 0.72f),
+                border = BorderStroke(0.75.dp, palette.divider),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Icon(
+                            imageVector = FolioIcons.GridView,
+                            contentDescription = null,
+                            tint = palette.accent,
+                            modifier = Modifier.size(15.dp)
+                        )
+                        Text(
+                            text = "SHELF LAYOUT / GRID SIZE",
+                            style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 1.1.sp),
+                            color = palette.accent
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = "Applies smoothly to both your Library and Private Shelf.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = palette.textMuted
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        listOf(
+                            2 to "2×2",
+                            3 to "3×3",
+                            4 to "4×4"
+                        ).forEach { (cols, label) ->
+                            val selected = settings.shelfGridColumns == cols
+                            Surface(
+                                onClick = { onSelectGridColumns(cols) },
+                                shape = RoundedCornerShape(12.dp),
+                                color = if (selected) palette.accent.copy(alpha = 0.16f) else palette.surface,
+                                border = BorderStroke(
+                                    if (selected) 1.5.dp else 0.75.dp,
+                                    if (selected) palette.accent else palette.divider
+                                ),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(44.dp)
+                                    .testTag("settings_grid_cols_$cols")
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Text(
+                                        text = label,
+                                        style = MaterialTheme.typography.labelLarge.copy(
+                                            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium
+                                        ),
+                                        color = if (selected) palette.accent else palette.text
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            // 3. Strictly Masked Zero-Trace Secret Shelf Code Setting
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = palette.background.copy(alpha = 0.72f),
                 border = BorderStroke(0.75.dp, palette.divider),
                 modifier = Modifier.fillMaxWidth()
             ) {
@@ -462,7 +558,7 @@ fun SettingsAndAboutSheet(
                             color = if (hasSecretCode) palette.accent.copy(alpha = 0.16f) else palette.surface
                         ) {
                             Text(
-                                text = if (hasSecretCode) "Active" else "Not set",
+                                text = if (hasSecretCode) "Secret Code Active" else "Not set",
                                 style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
                                 color = if (hasSecretCode) palette.accent else palette.textMuted,
                                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
@@ -472,73 +568,215 @@ fun SettingsAndAboutSheet(
 
                     Spacer(modifier = Modifier.height(6.dp))
                     Text(
-                        text = "Set a private word or code. Typing your exact code into the Library Search bar silently opens your Private Shelf.",
+                        text = if (hasSecretCode) {
+                            "Secret Code Active. Typing your exact code into the Library Search bar silently opens your Private Shelf. Changing or removing requires your current code."
+                        } else {
+                            "Set a private masked code (3+ characters). Typing your exact code into the Library Search bar silently opens your Private Shelf."
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = palette.textMuted
                     )
 
-                    Spacer(modifier = Modifier.height(10.dp))
-                    OutlinedTextField(
-                        value = secretDraft,
-                        onValueChange = { secretDraft = it },
-                        label = {
-                            Text(
-                                text = if (hasSecretCode) "Enter new secret code" else "Choose secret code",
-                                color = palette.textMuted
-                            )
-                        },
-                        singleLine = true,
-                        visualTransformation = if (showSecretPlain) VisualTransformation.None else PasswordVisualTransformation(),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = palette.accent,
-                            unfocusedBorderColor = palette.divider,
-                            focusedTextColor = palette.text,
-                            unfocusedTextColor = palette.text,
-                            cursorColor = palette.accent
-                        ),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("settings_secret_code_input")
-                    )
+                    Spacer(modifier = Modifier.height(12.dp))
 
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        TextButton(onClick = { showSecretPlain = !showSecretPlain }) {
+                    if (!hasSecretCode) {
+                        // Create new Secret Code (masked + confirm)
+                        MaskedSecretField(
+                            value = newCodeDraft,
+                            onValueChange = {
+                                newCodeDraft = it
+                                secretError = null
+                            },
+                            label = "New secret code",
+                            showPlain = showNewPlain,
+                            onToggleShow = { showNewPlain = !showNewPlain },
+                            testTag = "settings_secret_code_input"
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        MaskedSecretField(
+                            value = confirmCodeDraft,
+                            onValueChange = {
+                                confirmCodeDraft = it
+                                secretError = null
+                            },
+                            label = "Confirm secret code",
+                            showPlain = showConfirmPlain,
+                            onToggleShow = { showConfirmPlain = !showConfirmPlain },
+                            testTag = "settings_secret_code_confirm_input"
+                        )
+                        if (secretError != null) {
+                            Spacer(modifier = Modifier.height(6.dp))
                             Text(
-                                text = if (showSecretPlain) "Hide" else "Show",
-                                color = palette.textMuted
+                                text = secretError!!,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color(0xFFD14B4B)
                             )
                         }
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            if (hasSecretCode) {
-                                TextButton(
-                                    onClick = {
-                                        secretDraft = ""
-                                        onClearSecretCode()
-                                    }
-                                ) {
-                                    Text("Clear", color = palette.textMuted)
-                                }
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Button(
+                            onClick = {
+                                val err = onCreateSecretCode(newCodeDraft, confirmCodeDraft)
+                                if (err == null) resetSecretDrafts() else secretError = err
+                            },
+                            enabled = newCodeDraft.trim().length >= 3 && confirmCodeDraft.isNotEmpty(),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = palette.accent,
+                                contentColor = palette.background
+                            ),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(46.dp)
+                                .testTag("settings_save_secret_code_button")
+                        ) {
+                            Text("Activate Secret Code")
+                        }
+                    } else if (secretActionMode == 0) {
+                        // Secret Code is active: show Change / Remove triggers (never direct overwrite!)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = {
+                                    resetSecretDrafts()
+                                    secretActionMode = 1
+                                },
+                                border = BorderStroke(0.75.dp, palette.accent),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(44.dp)
+                                    .testTag("settings_change_secret_code_button")
+                            ) {
+                                Text("Change Code", color = palette.accent)
                             }
+                            OutlinedButton(
+                                onClick = {
+                                    resetSecretDrafts()
+                                    secretActionMode = 2
+                                },
+                                border = BorderStroke(0.75.dp, palette.divider),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(44.dp)
+                                    .testTag("settings_remove_secret_code_button")
+                            ) {
+                                Text("Remove Code", color = Color(0xFFD14B4B))
+                            }
+                        }
+                    } else if (secretActionMode == 1) {
+                        // Change Secret Code: MUST verify Current Code first -> New -> Confirm
+                        MaskedSecretField(
+                            value = currentCodeDraft,
+                            onValueChange = {
+                                currentCodeDraft = it
+                                secretError = null
+                            },
+                            label = "Current secret code",
+                            showPlain = showCurrentPlain,
+                            onToggleShow = { showCurrentPlain = !showCurrentPlain },
+                            testTag = "settings_current_secret_code_input"
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        MaskedSecretField(
+                            value = newCodeDraft,
+                            onValueChange = {
+                                newCodeDraft = it
+                                secretError = null
+                            },
+                            label = "New secret code",
+                            showPlain = showNewPlain,
+                            onToggleShow = { showNewPlain = !showNewPlain },
+                            testTag = "settings_new_secret_code_input"
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        MaskedSecretField(
+                            value = confirmCodeDraft,
+                            onValueChange = {
+                                confirmCodeDraft = it
+                                secretError = null
+                            },
+                            label = "Confirm new secret code",
+                            showPlain = showConfirmPlain,
+                            onToggleShow = { showConfirmPlain = !showConfirmPlain },
+                            testTag = "settings_confirm_new_secret_code_input"
+                        )
+                        if (secretError != null) {
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(
+                                text = secretError!!,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color(0xFFD14B4B)
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.End,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            TextButton(onClick = { resetSecretDrafts() }) {
+                                Text("Cancel", color = palette.textMuted)
+                            }
+                            Spacer(modifier = Modifier.width(8.dp))
                             Button(
                                 onClick = {
-                                    if (onSaveSecretCode(secretDraft)) {
-                                        secretDraft = ""
-                                    }
+                                    val err = onChangeSecretCode(currentCodeDraft, newCodeDraft, confirmCodeDraft)
+                                    if (err == null) resetSecretDrafts() else secretError = err
                                 },
-                                enabled = secretDraft.trim().length >= 3,
+                                enabled = currentCodeDraft.isNotEmpty() && newCodeDraft.trim().length >= 3,
                                 colors = ButtonDefaults.buttonColors(
                                     containerColor = palette.accent,
                                     contentColor = palette.background
                                 ),
-                                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-                                modifier = Modifier.testTag("settings_save_secret_code_button")
+                                modifier = Modifier.testTag("settings_confirm_change_secret_code_button")
                             ) {
-                                Text("Save Code")
+                                Text("Update Code")
+                            }
+                        }
+                    } else {
+                        // Remove Secret Code: MUST verify Current Code first
+                        MaskedSecretField(
+                            value = currentCodeDraft,
+                            onValueChange = {
+                                currentCodeDraft = it
+                                secretError = null
+                            },
+                            label = "Enter current secret code to remove",
+                            showPlain = showCurrentPlain,
+                            onToggleShow = { showCurrentPlain = !showCurrentPlain },
+                            testTag = "settings_remove_verify_secret_code_input"
+                        )
+                        if (secretError != null) {
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(
+                                text = secretError!!,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color(0xFFD14B4B)
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.End,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            TextButton(onClick = { resetSecretDrafts() }) {
+                                Text("Cancel", color = palette.textMuted)
+                            }
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Button(
+                                onClick = {
+                                    val err = onRemoveSecretCode(currentCodeDraft)
+                                    if (err == null) resetSecretDrafts() else secretError = err
+                                },
+                                enabled = currentCodeDraft.isNotEmpty(),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Color(0xFFD14B4B),
+                                    contentColor = Color.White
+                                ),
+                                modifier = Modifier.testTag("settings_confirm_remove_secret_code_button")
+                            ) {
+                                Text("Verify & Remove")
                             }
                         }
                     }
@@ -547,10 +785,10 @@ fun SettingsAndAboutSheet(
 
             Spacer(modifier = Modifier.height(14.dp))
 
-            // 4. Optional Gemini API Key for Multi-Language Translation
+            // 4. Translation Engine & 1-Tap Full-Page Translation Toggle
             Surface(
                 shape = RoundedCornerShape(16.dp),
-                color = palette.background.copy(alpha = 0.68f),
+                color = palette.background.copy(alpha = 0.72f),
                 border = BorderStroke(0.75.dp, palette.divider),
                 modifier = Modifier.fillMaxWidth()
             ) {
@@ -560,9 +798,44 @@ fun SettingsAndAboutSheet(
                         style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 1.1.sp),
                         color = palette.accent
                     )
-                    Spacer(modifier = Modifier.height(4.dp))
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f).padding(end = 10.dp)) {
+                            Text(
+                                text = "1-Tap Full-Page Translation Button",
+                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
+                                color = palette.text
+                            )
+                            Text(
+                                text = "Show an unobtrusive Translate Page button while reading.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = palette.textMuted
+                            )
+                        }
+                        Switch(
+                            checked = settings.fullPageTranslateEnabled,
+                            onCheckedChange = onToggleFullPageTranslate,
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = palette.background,
+                                checkedTrackColor = palette.accent,
+                                uncheckedThumbColor = palette.textMuted,
+                                uncheckedTrackColor = palette.surface
+                            ),
+                            modifier = Modifier.testTag("settings_full_page_translate_switch")
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+                    HorizontalDivider(color = palette.divider, thickness = 0.5.dp)
+                    Spacer(modifier = Modifier.height(10.dp))
+
                     Text(
-                        text = "Uses a free multi-language translator & offline cache by default. Optionally add your own Gemini API key for richer sentence translations.",
+                        text = "Uses a free multi-language translator & offline cache by default. Optionally add your own Gemini API key for richer paragraph & page translations.",
                         style = MaterialTheme.typography.bodySmall,
                         color = palette.textMuted
                     )
@@ -573,6 +846,16 @@ fun SettingsAndAboutSheet(
                         label = { Text("Optional Gemini API Key", color = palette.textMuted) },
                         singleLine = true,
                         visualTransformation = if (showKeyPlain) VisualTransformation.None else PasswordVisualTransformation(),
+                        trailingIcon = {
+                            IconButton(onClick = { showKeyPlain = !showKeyPlain }) {
+                                Icon(
+                                    imageVector = if (showKeyPlain) FolioIcons.VisibilityOff else FolioIcons.Visibility,
+                                    contentDescription = if (showKeyPlain) "Hide key" else "Show key",
+                                    tint = palette.textMuted,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        },
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedBorderColor = palette.accent,
                             unfocusedBorderColor = palette.divider,
@@ -587,37 +870,30 @@ fun SettingsAndAboutSheet(
                     Spacer(modifier = Modifier.height(8.dp))
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
+                        horizontalArrangement = Arrangement.End,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        TextButton(onClick = { showKeyPlain = !showKeyPlain }) {
-                            Text(
-                                text = if (showKeyPlain) "Hide key" else "Show key",
-                                color = palette.textMuted
-                            )
-                        }
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            if (settings.geminiApiKey.isNotEmpty() || keyDraft.isNotEmpty()) {
-                                TextButton(
-                                    onClick = {
-                                        keyDraft = ""
-                                        onSaveGeminiKey("")
-                                    }
-                                ) {
-                                    Text("Clear", color = palette.textMuted)
+                        if (settings.geminiApiKey.isNotEmpty() || keyDraft.isNotEmpty()) {
+                            TextButton(
+                                onClick = {
+                                    keyDraft = ""
+                                    onSaveGeminiKey("")
                                 }
-                            }
-                            Button(
-                                onClick = { onSaveGeminiKey(keyDraft) },
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = palette.accent,
-                                    contentColor = palette.background
-                                ),
-                                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-                                modifier = Modifier.testTag("about_save_gemini_key_button")
                             ) {
-                                Text("Save")
+                                Text("Clear", color = palette.textMuted)
                             }
+                        }
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Button(
+                            onClick = { onSaveGeminiKey(keyDraft) },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = palette.accent,
+                                contentColor = palette.background
+                            ),
+                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                            modifier = Modifier.testTag("about_save_gemini_key_button")
+                        ) {
+                            Text("Save")
                         }
                     }
                 }
@@ -628,17 +904,59 @@ fun SettingsAndAboutSheet(
     }
 }
 
+@Composable
+private fun MaskedSecretField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    label: String,
+    showPlain: Boolean,
+    onToggleShow: () -> Unit,
+    testTag: String
+) {
+    val palette = LocalFolioPalette.current
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValueChange,
+        label = { Text(label, color = palette.textMuted) },
+        singleLine = true,
+        visualTransformation = if (showPlain) VisualTransformation.None else PasswordVisualTransformation(),
+        trailingIcon = {
+            IconButton(onClick = onToggleShow) {
+                Icon(
+                    imageVector = if (showPlain) FolioIcons.VisibilityOff else FolioIcons.Visibility,
+                    contentDescription = if (showPlain) "Hide secret code" else "Show secret code",
+                    tint = palette.textMuted,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+        },
+        colors = OutlinedTextFieldDefaults.colors(
+            focusedBorderColor = palette.accent,
+            unfocusedBorderColor = palette.divider,
+            focusedTextColor = palette.text,
+            unfocusedTextColor = palette.text,
+            cursorColor = palette.accent
+        ),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag(testTag)
+    )
+}
+
 /**
  * Dictionary & Language Sheet opened from the 3-dot Library Menu:
- * - Select default target translation language across 14 supported languages
+ * - Select default target translation language across 15 supported languages (including Arabic RTL)
+ * - Toggle 1-Tap Full-Page Translation Button in Reader
  * - Quick shortcut to Word Bank & Flashcard Practice
  */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun DictionaryAndLanguageSheet(
     currentLanguage: TranslationLanguage,
+    fullPageTranslateEnabled: Boolean,
     wordBankCount: Int,
     onSelectLanguage: (TranslationLanguage) -> Unit,
+    onToggleFullPageTranslate: (Boolean) -> Unit,
     onOpenWordBank: () -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -719,7 +1037,49 @@ fun DictionaryAndLanguageSheet(
                 }
             }
 
-            Spacer(modifier = Modifier.height(20.dp))
+            Spacer(modifier = Modifier.height(18.dp))
+
+            // 1-Tap Full-Page Translation Toggle
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = palette.background.copy(alpha = 0.72f),
+                border = BorderStroke(0.75.dp, palette.divider),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f).padding(end = 10.dp)) {
+                        Text(
+                            text = "1-Tap Full-Page Translation Button",
+                            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
+                            color = palette.text
+                        )
+                        Text(
+                            text = "Translate the entire visible book page in one tap while reading.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = palette.textMuted
+                        )
+                    }
+                    Switch(
+                        checked = fullPageTranslateEnabled,
+                        onCheckedChange = onToggleFullPageTranslate,
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = palette.background,
+                            checkedTrackColor = palette.accent,
+                            uncheckedThumbColor = palette.textMuted,
+                            uncheckedTrackColor = palette.surface
+                        ),
+                        modifier = Modifier.testTag("dict_full_page_translate_switch")
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
             HorizontalDivider(color = palette.divider, thickness = 0.5.dp)
             Spacer(modifier = Modifier.height(14.dp))
 

@@ -48,7 +48,8 @@ class PreferencesRepository(context: Context) {
             paperGrainEnabled = prefs.getBoolean(KEY_PAPER_GRAIN, true),
             pageStiffness = prefs.getFloat(KEY_STIFFNESS, 0.55f).coerceIn(0.2f, 1.0f),
             warmthFilter = prefs.getFloat(KEY_WARMTH, 0f).coerceIn(0f, 0.65f),
-            brightnessLevel = prefs.getFloat(KEY_BRIGHTNESS, 1.0f).coerceIn(0.15f, 1.0f),
+            useSystemBrightness = prefs.getBoolean(KEY_USE_SYSTEM_BRIGHTNESS, true),
+            brightnessLevel = prefs.getFloat(KEY_BRIGHTNESS, 0.85f).coerceIn(0.05f, 1.0f),
             readingRulerEnabled = prefs.getBoolean(KEY_RULER, false),
             bionicModeEnabled = prefs.getBoolean(KEY_BIONIC, false),
             keepScreenAwake = prefs.getBoolean(KEY_KEEP_AWAKE, true),
@@ -56,13 +57,15 @@ class PreferencesRepository(context: Context) {
             pdfAutoCropEnabled = prefs.getBoolean(KEY_PDF_CROP, false),
             ambientSoundMode = runCatching { AmbientSoundMode.valueOf(ambientName ?: "") }
                 .getOrDefault(AmbientSoundMode.OFF),
-            ambientVolume = prefs.getFloat(KEY_AMBIENT_VOL, 0.45f).coerceIn(0.05f, 1.0f),
+            ambientVolume = prefs.getFloat(KEY_AMBIENT_VOL, 0.55f).coerceIn(0.05f, 1.0f),
             ttsSpeed = prefs.getFloat(KEY_TTS_SPEED, 1.0f).coerceIn(0.75f, 2.0f),
             autoFlipSeconds = prefs.getInt(KEY_AUTO_FLIP, 0),
             dailyGoalTarget = prefs.getInt(KEY_GOAL_TARGET, 20).coerceIn(5, 240),
             dailyGoalUnit = runCatching { DailyGoalUnit.valueOf(goalUnitName ?: "") }
                 .getOrDefault(DailyGoalUnit.MINUTES),
             defaultTargetLanguage = TranslationLanguage.fromCode(targetLangCode),
+            fullPageTranslateEnabled = prefs.getBoolean(KEY_FULL_PAGE_TRANSLATE, false),
+            shelfGridColumns = prefs.getInt(KEY_SHELF_GRID_COLUMNS, 2).coerceIn(2, 4),
             geminiApiKey = prefs.getString(KEY_GEMINI_KEY, "") ?: "",
             hasDismissedFirstTimeGreeting = prefs.getBoolean(KEY_FIRST_GREETING_DISMISSED, false),
             hasSeededWelcomeGuide = prefs.getBoolean(KEY_WELCOME_GUIDE_SEEDED, false)
@@ -113,6 +116,25 @@ class PreferencesRepository(context: Context) {
             .apply()
     }
 
+    /**
+     * Strictly requires verifying the current secret code before changing it.
+     */
+    fun changeSecretShelfCode(currentCode: String, newCode: String): Boolean {
+        if (!hasSecretShelfCode()) return setSecretShelfCode(newCode)
+        if (!matchesSecretShelfCode(currentCode)) return false
+        return setSecretShelfCode(newCode)
+    }
+
+    /**
+     * Strictly requires verifying the current secret code before removing it.
+     */
+    fun removeSecretShelfCode(currentCode: String): Boolean {
+        if (!hasSecretShelfCode()) return true
+        if (!matchesSecretShelfCode(currentCode)) return false
+        clearSecretShelfCode()
+        return true
+    }
+
     fun matchesSecretShelfCode(candidate: String): Boolean {
         val clean = candidate.trim()
         if (clean.isEmpty()) return false
@@ -139,6 +161,7 @@ class PreferencesRepository(context: Context) {
             .putBoolean(KEY_PAPER_GRAIN, s.paperGrainEnabled)
             .putFloat(KEY_STIFFNESS, s.pageStiffness)
             .putFloat(KEY_WARMTH, s.warmthFilter)
+            .putBoolean(KEY_USE_SYSTEM_BRIGHTNESS, s.useSystemBrightness)
             .putFloat(KEY_BRIGHTNESS, s.brightnessLevel)
             .putBoolean(KEY_RULER, s.readingRulerEnabled)
             .putBoolean(KEY_BIONIC, s.bionicModeEnabled)
@@ -152,6 +175,8 @@ class PreferencesRepository(context: Context) {
             .putInt(KEY_GOAL_TARGET, s.dailyGoalTarget)
             .putString(KEY_GOAL_UNIT, s.dailyGoalUnit.name)
             .putString(KEY_DEFAULT_TARGET_LANG, s.defaultTargetLanguage.code)
+            .putBoolean(KEY_FULL_PAGE_TRANSLATE, s.fullPageTranslateEnabled)
+            .putInt(KEY_SHELF_GRID_COLUMNS, s.shelfGridColumns.coerceIn(2, 4))
             .putString(KEY_GEMINI_KEY, s.geminiApiKey.trim())
             .putBoolean(KEY_FIRST_GREETING_DISMISSED, s.hasDismissedFirstTimeGreeting)
             .putBoolean(KEY_WELCOME_GUIDE_SEEDED, s.hasSeededWelcomeGuide)
@@ -170,6 +195,7 @@ class PreferencesRepository(context: Context) {
         private const val KEY_PAPER_GRAIN = "paper_grain"
         private const val KEY_STIFFNESS = "page_stiffness"
         private const val KEY_WARMTH = "warmth_filter"
+        private const val KEY_USE_SYSTEM_BRIGHTNESS = "use_system_brightness"
         private const val KEY_BRIGHTNESS = "brightness_level"
         private const val KEY_RULER = "reading_ruler"
         private const val KEY_BIONIC = "bionic_mode"
@@ -183,6 +209,8 @@ class PreferencesRepository(context: Context) {
         private const val KEY_GOAL_TARGET = "daily_goal_target"
         private const val KEY_GOAL_UNIT = "daily_goal_unit"
         private const val KEY_DEFAULT_TARGET_LANG = "default_target_language"
+        private const val KEY_FULL_PAGE_TRANSLATE = "full_page_translate_enabled"
+        private const val KEY_SHELF_GRID_COLUMNS = "shelf_grid_columns"
         private const val KEY_GEMINI_KEY = "optional_gemini_key"
         private const val KEY_FIRST_GREETING_DISMISSED = "first_greeting_dismissed"
         private const val KEY_WELCOME_GUIDE_SEEDED = "welcome_guide_seeded"

@@ -137,21 +137,55 @@ class LibraryViewModel(
         _searchQuery.value = newQuery
     }
 
-    fun saveSecretShelfCode(code: String): Boolean {
-        val ok = preferencesRepository.setSecretShelfCode(code)
+    fun createSecretShelfCode(newCode: String, confirmCode: String): String? {
+        val cleanNew = newCode.trim()
+        val cleanConfirm = confirmCode.trim()
+        if (cleanNew.length < 3) return "Secret code must be at least 3 characters"
+        if (cleanNew != cleanConfirm) return "Secret codes do not match"
+        val ok = preferencesRepository.setSecretShelfCode(cleanNew)
         _hasSecretCode.value = preferencesRepository.hasSecretShelfCode()
-        _statusMessage.value = if (ok) {
-            "Secret Shelf Code saved"
-        } else {
-            "Use at least 3 characters for your secret code"
+        if (ok) {
+            _statusMessage.value = "Secret Shelf Code activated"
+            return null
         }
-        return ok
+        return "Could not save secret code"
     }
 
-    fun clearSecretShelfCode() {
-        preferencesRepository.clearSecretShelfCode()
+    /**
+     * Strictly verifies the current Secret Code before updating to a new Secret Code.
+     */
+    fun changeSecretShelfCode(currentCode: String, newCode: String, confirmCode: String): String? {
+        val cleanCurrent = currentCode.trim()
+        val cleanNew = newCode.trim()
+        val cleanConfirm = confirmCode.trim()
+        if (cleanCurrent.isEmpty()) return "Enter your current secret code"
+        if (!preferencesRepository.matchesSecretShelfCode(cleanCurrent)) {
+            return "Current secret code is incorrect"
+        }
+        if (cleanNew.length < 3) return "New secret code must be at least 3 characters"
+        if (cleanNew != cleanConfirm) return "New secret codes do not match"
+        val ok = preferencesRepository.changeSecretShelfCode(cleanCurrent, cleanNew)
+        _hasSecretCode.value = preferencesRepository.hasSecretShelfCode()
+        if (ok) {
+            _statusMessage.value = "Secret Shelf Code updated"
+            return null
+        }
+        return "Could not update secret code"
+    }
+
+    /**
+     * Strictly verifies the current Secret Code before removing it.
+     */
+    fun removeSecretShelfCode(currentCode: String): String? {
+        val cleanCurrent = currentCode.trim()
+        if (cleanCurrent.isEmpty()) return "Enter your current secret code"
+        if (!preferencesRepository.removeSecretShelfCode(cleanCurrent)) {
+            return "Current secret code is incorrect"
+        }
         _hasSecretCode.value = false
-        _statusMessage.value = "Secret Shelf Code cleared"
+        _isVaultUnlocked.value = false
+        _statusMessage.value = "Secret Shelf Code removed"
+        return null
     }
 
     fun lockVault() {
@@ -255,6 +289,15 @@ class LibraryViewModel(
     fun setDefaultTargetLanguage(language: TranslationLanguage) {
         preferencesRepository.updateSettings { it.copy(defaultTargetLanguage = language) }
         _statusMessage.value = "Default language: ${language.label}"
+    }
+
+    fun setFullPageTranslateEnabled(enabled: Boolean) {
+        preferencesRepository.updateSettings { it.copy(fullPageTranslateEnabled = enabled) }
+    }
+
+    fun setShelfGridColumns(columns: Int) {
+        val clamped = columns.coerceIn(2, 4)
+        preferencesRepository.updateSettings { it.copy(shelfGridColumns = clamped) }
     }
 
     fun updateGeminiApiKey(key: String) {

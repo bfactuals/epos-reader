@@ -208,66 +208,131 @@ object Paginator {
 
         val pages = mutableListOf<PaginatedPage>()
         val toc = mutableListOf<ChapterTocItem>()
-        val headingGapPx = (24f * density).toInt()
 
         chapters.forEachIndexed { chapterIdx, chapter ->
             val chapterStartPage = pages.size
             toc.add(ChapterTocItem(title = chapter.title, pageIndex = chapterStartPage, chapterIndex = chapterIdx))
+            val chapterPages = paginateSingleChapter(
+                chapter = chapter,
+                chapterIndex = chapterIdx,
+                startPageIndex = chapterStartPage,
+                metrics = metrics,
+                bodyPaint = bodyPaint,
+                headingPaint = headingPaint,
+                density = density,
+                settings = settings
+            )
+            pages.addAll(chapterPages)
+        }
 
-            val fullChapterText = chapter.paragraphs.joinToString("\n\n")
-            if (fullChapterText.isBlank()) {
-                pages.add(
-                    PaginatedPage(
-                        pageIndex = pages.size,
-                        chapterIndex = chapterIdx,
-                        chapterTitle = chapter.title,
-                        headingText = chapter.title,
-                        bodyText = ""
-                    )
+        if (pages.isEmpty()) {
+            pages.add(PaginatedPage(0, 0, "Empty", null, ""))
+        }
+
+        return PaginationResult(pages = pages, toc = toc)
+    }
+
+    /**
+     * Fast single-chapter paginator that chunks huge chapters into <= 6500-char paragraph slices
+     * so even 1000+ page books paginate a single chapter in a few milliseconds without UI stalls.
+     */
+    fun paginateSingleChapter(
+        chapter: BookChapter,
+        chapterIndex: Int,
+        startPageIndex: Int,
+        metrics: PageContentMetrics,
+        bodyPaint: TextPaint,
+        headingPaint: TextPaint,
+        density: Float,
+        settings: ReaderSettings
+    ): List<PaginatedPage> {
+        val result = mutableListOf<PaginatedPage>()
+        val nonBlankParas = chapter.paragraphs.filter { it.isNotBlank() }
+        if (nonBlankParas.isEmpty()) {
+            result.add(
+                PaginatedPage(
+                    pageIndex = startPageIndex,
+                    chapterIndex = chapterIndex,
+                    chapterTitle = chapter.title,
+                    headingText = chapter.title,
+                    bodyText = ""
                 )
-                return@forEachIndexed
+            )
+            return result
+        }
+
+        val headingGapPx = (24f * density).toInt()
+        val headingLayout = buildStaticLayout(chapter.title, headingPaint, metrics.contentWidth, 1.2f)
+        val headingReserve = headingLayout.height + headingGapPx
+        val minFirstHeight = (bodyPaint.textSize * 3f).toInt()
+
+        // Group paragraphs into manageable ~6500-char segments for blazing-fast StaticLayout creation
+        val segments = mutableListOf<String>()
+        val builder = StringBuilder()
+        for (para in nonBlankParas) {
+            if (builder.isNotEmpty() && builder.length + para.length + 2 > 6500) {
+                segments.add(builder.toString())
+                builder.clear()
             }
+            if (builder.isNotEmpty()) builder.append("\n\n")
+            builder.append(para)
+        }
+        if (builder.isNotEmpty()) segments.add(builder.toString())
 
-            val headingLayout = buildStaticLayout(chapter.title, headingPaint, metrics.contentWidth, 1.2f)
-            val headingReserve = headingLayout.height + headingGapPx
-            val styledChapter = formatDisplayText(fullChapterText, settings.bionicModeEnabled)
+        var isFirstPageOfChapter = true
+        var pendingCarry = ""
 
-            val fullLayout = buildStaticLayout(
-                styledChapter,
+        for (segIdx in segments.indices) {
+            val combinedText = if (pendingCarry.isEmpty()) {
+                segments[segIdx]
+            } else {
+                "$pendingCarry\n\n${segments[segIdx]}"
+            }
+            pendingCarry = ""
+
+            val layout = buildStaticLayout(
+                combinedText,
                 bodyPaint,
                 metrics.contentWidth,
                 settings.lineSpacing
             )
-
-            val totalLines = fullLayout.lineCount
+            val totalLines = layout.lineCount
             var startLine = 0
-            var isFirstPageOfChapter = true
+            val isLastSegment = segIdx == segments.lastIndex
 
             while (startLine < totalLines) {
                 val availableHeight = if (isFirstPageOfChapter) {
-                    (metrics.contentHeight - headingReserve).coerceAtLeast((bodyPaint.textSize * 3f).toInt())
+                    (metrics.contentHeight - headingReserve).coerceAtLeast(minFirstHeight)
                 } else {
                     metrics.contentHeight
                 }
-                val startTop = fullLayout.getLineTop(startLine)
+                val startTop = layout.getLineTop(startLine)
                 var endLine = startLine
                 while (endLine < totalLines) {
-                    val lineBottom = fullLayout.getLineBottom(endLine)
+                    val lineBottom = layout.getLineBottom(endLine)
                     if (lineBottom - startTop > availableHeight && endLine > startLine) {
                         break
                     }
                     endLine++
                 }
 
-                val charStart = fullLayout.getLineStart(startLine)
-                val charEnd = fullLayout.getLineEnd((endLine - 1).coerceAtLeast(startLine))
-                val slice = fullChapterText.substring(charStart, charEnd).trim()
+                // If we reached the end of a non-final segment and the page isn't full, carry remainder into next segment
+                val usedHeight = layout.getLineBottom((endLine - 1).coerceAtLeast(startLine)) - startTop
+                if (!isLastSegment && endLine >= totalLines && usedHeight < availableHeight * 0.85f) {
+                    val carryStart = layout.getLineStart(startLine)
+                    pendingCarry = combinedText.substring(carryStart).trim()
+                    break
+                }
+
+                val charStart = layout.getLineStart(startLine)
+                val charEnd = layout.getLineEnd((endLine - 1).coerceAtLeast(startLine))
+                val slice = combinedText.substring(charStart, charEnd).trim()
 
                 if (slice.isNotEmpty() || isFirstPageOfChapter) {
-                    pages.add(
+                    result.add(
                         PaginatedPage(
-                            pageIndex = pages.size,
-                            chapterIndex = chapterIdx,
+                            pageIndex = startPageIndex + result.size,
+                            chapterIndex = chapterIndex,
                             chapterTitle = chapter.title,
                             headingText = if (isFirstPageOfChapter) chapter.title else null,
                             bodyText = slice
@@ -280,11 +345,52 @@ object Paginator {
             }
         }
 
-        if (pages.isEmpty()) {
-            pages.add(PaginatedPage(0, 0, "Empty", null, ""))
+        if (pendingCarry.isNotBlank()) {
+            result.add(
+                PaginatedPage(
+                    pageIndex = startPageIndex + result.size,
+                    chapterIndex = chapterIndex,
+                    chapterTitle = chapter.title,
+                    headingText = if (isFirstPageOfChapter) chapter.title else null,
+                    bodyText = pendingCarry
+                )
+            )
         }
 
-        return PaginationResult(pages = pages, toc = toc)
+        if (result.isEmpty()) {
+            result.add(PaginatedPage(startPageIndex, chapterIndex, chapter.title, chapter.title, ""))
+        }
+        return result
+    }
+
+    /**
+     * Estimates page counts per chapter in <5ms for huge books (1000+ pages) so TOC and scrubber
+     * appear instantaneously while chapters paginate lazily on demand.
+     */
+    fun estimateChapterPageCounts(
+        chapters: List<BookChapter>,
+        widthPx: Int,
+        heightPx: Int,
+        density: Float,
+        topInsetPx: Int,
+        bottomInsetPx: Int,
+        settings: ReaderSettings
+    ): IntArray {
+        val metrics = computeMetrics(widthPx, heightPx, density, topInsetPx, bottomInsetPx, settings)
+        val bodyPaint = createBodyTextPaint(settings, density, 0xFF000000.toInt())
+        val avgCharWidth = bodyPaint.measureText("abcdefghijklmnopqrstuvwxyz ").coerceAtLeast(10f) / 27f
+        val lineHeight = (bodyPaint.textSize * settings.lineSpacing).coerceAtLeast(12f)
+        val charsPerLine = (metrics.contentWidth / avgCharWidth).coerceAtLeast(12f)
+        val linesPerPage = (metrics.contentHeight / lineHeight).coerceAtLeast(4f)
+        val charsPerPage = (charsPerLine * linesPerPage * 0.86f).coerceAtLeast(120f)
+
+        return IntArray(chapters.size) { idx ->
+            val ch = chapters[idx]
+            var totalChars = 0
+            for (p in ch.paragraphs) totalChars += p.length + 2
+            val est = ((totalChars + charsPerPage * 0.18f) / charsPerPage).toInt()
+            est.coerceAtLeast(1)
+        }
     }
 
     fun buildPageGeometry(
@@ -362,6 +468,8 @@ object Paginator {
             .setAlignment(alignment)
             .setLineSpacing(0f, lineSpacingMultiplier)
             .setIncludePad(false)
+            .setBreakStrategy(Layout.BREAK_STRATEGY_SIMPLE)
+            .setHyphenationFrequency(Layout.HYPHENATION_FREQUENCY_NONE)
             .build()
     }
 }

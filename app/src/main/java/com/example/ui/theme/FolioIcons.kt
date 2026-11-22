@@ -382,6 +382,91 @@ object FolioIcons {
         }
     }
 
+    val Timer: ImageVector by lazy {
+        icon("Timer") {
+            path(fill = SolidColor(Color.Black)) {
+                moveTo(9f, 1f); horizontalLineToRelative(6f); verticalLineToRelative(2f); horizontalLineTo(9f); close()
+                moveTo(11f, 8f); horizontalLineToRelative(2f); verticalLineToRelative(6f); horizontalLineToRelative(-2f); close()
+                moveTo(19.03f, 7.39f); lineToRelative(1.42f, -1.42f)
+                curveToRelative(-0.43f, -0.51f, -0.9f, -0.99f, -1.41f, -1.41f)
+                lineToRelative(-1.42f, 1.42f)
+                curveTo(16.07f, 4.74f, 14.12f, 4f, 12f, 4f)
+                curveToRelative(-4.97f, 0f, -9f, 4.03f, -9f, 9f)
+                reflectiveCurveToRelative(4.02f, 9f, 9f, 9f)
+                reflectiveCurveToRelative(9f, -4.03f, 9f, -9f)
+                curveTo(21f, 10.88f, 20.26f, 8.93f, 19.03f, 7.39f); close()
+                moveTo(12f, 20f); curveToRelative(-3.87f, 0f, -7f, -3.13f, -7f, -7f)
+                reflectiveCurveToRelative(3.13f, -7f, 7f, -7f)
+                reflectiveCurveToRelative(7f, 3.13f, 7f, 7f)
+                reflectiveCurveTo(15.87f, 20f, 12f, 20f); close()
+            }
+        }
+    }
+
+    val Visibility: ImageVector by lazy {
+        icon("Visibility") {
+            path(fill = SolidColor(Color.Black)) {
+                moveTo(12f, 4.5f)
+                curveTo(7f, 4.5f, 2.73f, 7.61f, 1f, 12f)
+                curveToRelative(1.73f, 4.39f, 6f, 7.5f, 11f, 7.5f)
+                reflectiveCurveToRelative(9.27f, -3.11f, 11f, -7.5f)
+                curveToRelative(-1.73f, -4.39f, -6f, -7.5f, -11f, -7.5f); close()
+                moveTo(12f, 17f); curveToRelative(-2.76f, 0f, -5f, -2.24f, -5f, -5f)
+                reflectiveCurveToRelative(2.24f, -5f, 5f, -5f)
+                reflectiveCurveToRelative(5f, 2.24f, 5f, 5f)
+                reflectiveCurveToRelative(-2.24f, 5f, -5f, 5f); close()
+                moveTo(12f, 9f); curveToRelative(-1.66f, 0f, -3f, 1.34f, -3f, 3f)
+                reflectiveCurveToRelative(1.34f, 3f, 3f, 3f)
+                reflectiveCurveToRelative(3f, -1.34f, 3f, -3f)
+                reflectiveCurveToRelative(-1.34f, -3f, -3f, -3f); close()
+            }
+        }
+    }
+
+    val VisibilityOff: ImageVector by lazy {
+        icon("VisibilityOff") {
+            path(fill = SolidColor(Color.Black)) {
+                moveTo(12f, 7f); curveToRelative(2.76f, 0f, 5f, 2.24f, 5f, 5f)
+                curveToRelative(0f, 0.65f, -0.13f, 1.26f, -0.36f, 1.83f)
+                lineToRelative(2.92f, 2.92f)
+                curveToRelative(1.51f, -1.26f, 2.7f, -2.89f, 3.43f, -4.75f)
+                curveToRelative(-1.73f, -4.39f, -6f, -7.5f, -11f, -7.5f)
+                curveToRelative(-1.4f, 0f, -2.74f, 0.25f, -3.98f, 0.7f)
+                lineToRelative(2.16f, 2.16f)
+                curveTo(10.74f, 7.13f, 11.35f, 7f, 12f, 7f); close()
+                moveTo(2f, 4.27f); lineToRelative(2.28f, 2.28f); lineToRelative(0.46f, 0.46f)
+                curveTo(3.08f, 8.3f, 1.78f, 10.02f, 1f, 12f)
+                curveToRelative(1.73f, 4.39f, 6f, 7.5f, 11f, 7.5f)
+                curveToRelative(1.55f, 0f, 3.03f, -0.3f, 4.38f, -0.84f)
+                lineToRelative(0.42f, 0.42f); lineTo(19.73f, 22f); lineTo(21f, 20.73f)
+                lineTo(3.27f, 3f); lineTo(2f, 4.27f); close()
+                moveTo(7.53f, 9.8f); lineToRelative(1.55f, 1.55f)
+                curveToRelative(-0.05f, 0.21f, -0.08f, 0.43f, -0.08f, 0.65f)
+                curveToRelative(0f, 1.66f, 1.34f, 3f, 3f, 3f)
+                curveToRelative(0.22f, 0f, 0.44f, -0.03f, 0.65f, -0.08f)
+                lineToRelative(1.55f, 1.55f)
+                curveToRelative(-0.67f, 0.33f, -1.41f, 0.53f, -2.2f, 0.53f)
+                curveToRelative(-2.76f, 0f, -5f, -2.24f, -5f, -5f)
+                curveToRelative(0f, -0.79f, 0.2f, -1.53f, 0.53f, -2.2f); close()
+            }
+        }
+    }
+
+    val GridView: ImageVector by lazy {
+        icon("GridView") {
+            path(fill = SolidColor(Color.Black)) {
+                moveTo(3f, 3f); verticalLineToRelative(8f); horizontalLineToRelative(8f); verticalLineTo(3f); horizontalLineTo(3f); close()
+                moveTo(9f, 9f); horizontalLineTo(5f); verticalLineTo(5f); horizontalLineToRelative(4f); verticalLineTo(9f); close()
+                moveTo(3f, 13f); verticalLineToRelative(8f); horizontalLineToRelative(8f); verticalLineToRelative(-8f); horizontalLineTo(3f); close()
+                moveTo(9f, 19f); horizontalLineTo(5f); verticalLineToRelative(-4f); horizontalLineToRelative(4f); verticalLineTo(19f); close()
+                moveTo(13f, 3f); verticalLineToRelative(8f); horizontalLineToRelative(8f); verticalLineTo(3f); horizontalLineToRelative(-8f); close()
+                moveTo(19f, 9f); horizontalLineToRelative(-4f); verticalLineTo(5f); horizontalLineToRelative(4f); verticalLineTo(9f); close()
+                moveTo(13f, 13f); verticalLineToRelative(8f); horizontalLineToRelative(8f); verticalLineToRelative(-8f); horizontalLineToRelative(-8f); close()
+                moveTo(19f, 19f); horizontalLineToRelative(-4f); verticalLineToRelative(-4f); horizontalLineToRelative(4f); verticalLineTo(19f); close()
+            }
+        }
+    }
+
     private fun icon(name: String, block: ImageVector.Builder.() -> Unit): ImageVector {
         return ImageVector.Builder(
             name = name,

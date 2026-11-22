@@ -25,20 +25,33 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -51,16 +64,25 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.example.data.model.ReaderSettings
 import com.example.data.model.TranslationLanguage
 import com.example.ui.theme.FolioIcons
 import com.example.ui.theme.LocalFolioPalette
 import com.example.ui.viewmodel.ActiveTranslationCard
+import com.example.ui.viewmodel.FullPageTranslationState
+import com.example.ui.viewmodel.ReadingSessionTimerState
 import kotlin.math.roundToInt
 
 /**
@@ -188,13 +210,22 @@ fun TranslationOverlayCard(
             }
 
             Spacer(modifier = Modifier.height(6.dp))
-            Text(
-                text = card.sourceText,
-                style = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Serif),
-                color = palette.textMuted,
-                maxLines = 3,
-                overflow = TextOverflow.Ellipsis
-            )
+            val sourceIsRtl = remember(card.sourceText) {
+                card.sourceText.any { ch -> ch in '\u0600'..'\u06FF' || ch in '\u0750'..'\u077F' }
+            }
+            CompositionLocalProvider(
+                LocalLayoutDirection provides if (sourceIsRtl) LayoutDirection.Rtl else LayoutDirection.Ltr
+            ) {
+                Text(
+                    text = card.sourceText,
+                    style = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Serif),
+                    color = palette.textMuted,
+                    textAlign = TextAlign.Start,
+                    maxLines = 4,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
 
             Spacer(modifier = Modifier.height(8.dp))
             HorizontalDivider(color = palette.divider, thickness = 0.5.dp)
@@ -218,11 +249,26 @@ fun TranslationOverlayCard(
                     )
                 }
             } else if (entry != null) {
-                Text(
-                    text = entry.translatedText,
-                    style = MaterialTheme.typography.titleMedium,
-                    color = palette.text
-                )
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 220.dp)
+                        .verticalScroll(rememberScrollState())
+                ) {
+                    CompositionLocalProvider(
+                        LocalLayoutDirection provides if (card.targetLanguage.isRtl) LayoutDirection.Rtl else LayoutDirection.Ltr
+                    ) {
+                        Text(
+                            text = entry.translatedText,
+                            style = MaterialTheme.typography.titleMedium.copy(
+                                lineHeight = 25.sp
+                            ),
+                            color = palette.text,
+                            textAlign = TextAlign.Start,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                }
                 if (!card.errorHint.isNullOrBlank()) {
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
@@ -684,3 +730,757 @@ fun ReadingRulerOverlay(
         }
     }
 }
+
+/**
+ * Unobtrusive Corner Button for 1-Tap Full-Page Translation (only visible when enabled in settings).
+ */
+@Composable
+fun FloatingTranslatePagePill(
+    visible: Boolean,
+    targetLanguage: TranslationLanguage,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val palette = LocalFolioPalette.current
+    AnimatedVisibility(
+        visible = visible,
+        enter = fadeIn(),
+        exit = fadeOut(),
+        modifier = modifier
+    ) {
+        Surface(
+            onClick = onClick,
+            shape = RoundedCornerShape(24.dp),
+            color = palette.surfaceGlass,
+            border = BorderStroke(0.75.dp, palette.accent.copy(alpha = 0.45f)),
+            shadowElevation = 6.dp,
+            modifier = Modifier
+                .heightIn(min = 48.dp)
+                .testTag("reader_translate_page_button")
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Icon(
+                    imageVector = FolioIcons.Translate,
+                    contentDescription = "Translate current page",
+                    tint = palette.accent,
+                    modifier = Modifier.size(18.dp)
+                )
+                Text(
+                    text = targetLanguage.code.uppercase(),
+                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                    color = palette.text
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Full-Page Translated Reading Overlay matching the active Paper/Sepia/Night theme.
+ * Supports Arabic & Urdu RTL layout, on-the-fly language switching, and 1-tap "Show Original".
+ */
+@Composable
+fun FullPageTranslationOverlay(
+    state: FullPageTranslationState,
+    settings: ReaderSettings,
+    onSwitchLanguage: (TranslationLanguage) -> Unit,
+    onRetry: () -> Unit,
+    onCopyAll: (String) -> Unit,
+    onShowOriginal: () -> Unit
+) {
+    val palette = LocalFolioPalette.current
+    var showLangMenu by remember { mutableStateOf(false) }
+
+    Surface(
+        color = palette.background,
+        modifier = Modifier
+            .fillMaxSize()
+            .testTag("full_page_translation_overlay")
+    ) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            // Top Frosted Control Bar
+            Surface(
+                color = palette.surfaceGlass,
+                border = BorderStroke(0.5.dp, palette.divider),
+                shadowElevation = 4.dp,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .statusBarsPadding()
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = FolioIcons.Translate,
+                            contentDescription = null,
+                            tint = palette.accent,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Box {
+                            Surface(
+                                onClick = { showLangMenu = true },
+                                shape = RoundedCornerShape(10.dp),
+                                color = palette.accent.copy(alpha = 0.14f),
+                                border = BorderStroke(0.75.dp, palette.accent.copy(alpha = 0.45f)),
+                                modifier = Modifier.testTag("full_page_language_switcher")
+                            ) {
+                                Text(
+                                    text = "${state.targetLanguage.label} ▾",
+                                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                                    color = palette.accent,
+                                    modifier = Modifier.padding(horizontal = 11.dp, vertical = 7.dp)
+                                )
+                            }
+                            DropdownMenu(
+                                expanded = showLangMenu,
+                                onDismissRequest = { showLangMenu = false },
+                                containerColor = palette.surface,
+                                modifier = Modifier.heightIn(max = 340.dp)
+                            ) {
+                                TranslationLanguage.entries.forEach { lang ->
+                                    val selected = lang == state.targetLanguage
+                                    DropdownMenuItem(
+                                        text = {
+                                            Row(
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Text(
+                                                    text = lang.label,
+                                                    style = MaterialTheme.typography.bodyMedium.copy(
+                                                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal
+                                                    ),
+                                                    color = if (selected) palette.accent else palette.text
+                                                )
+                                                if (lang.nativeName != lang.label) {
+                                                    Text(
+                                                        text = lang.nativeName,
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        color = palette.textMuted
+                                                    )
+                                                }
+                                            }
+                                        },
+                                        onClick = {
+                                            showLangMenu = false
+                                            if (lang != state.targetLanguage) {
+                                                onSwitchLanguage(lang)
+                                            }
+                                        }
+                                    )
+                                }
+                            }
+                        }
+
+                        if (state.fromCache && !state.isLoading) {
+                            Text(
+                                text = "Cached",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = palette.textMuted
+                            )
+                        }
+                    }
+
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        if (!state.isLoading && state.translatedText.isNotBlank()) {
+                            TextButton(onClick = { onCopyAll(state.translatedText) }) {
+                                Text("Copy", color = palette.textMuted)
+                            }
+                        }
+                        Surface(
+                            onClick = onShowOriginal,
+                            shape = RoundedCornerShape(12.dp),
+                            color = palette.accent,
+                            modifier = Modifier.testTag("full_page_show_original_button")
+                        ) {
+                            Text(
+                                text = "Show Original",
+                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                                color = palette.background,
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Translated Page Content Body
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .navigationBarsPadding()
+            ) {
+                when {
+                    state.isLoading -> {
+                        Column(
+                            modifier = Modifier.align(Alignment.Center),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(14.dp)
+                        ) {
+                            CircularProgressIndicator(
+                                color = palette.accent,
+                                strokeWidth = 2.5.dp,
+                                modifier = Modifier.size(30.dp)
+                            )
+                            Text(
+                                text = "Translating Page ${state.pageIndex + 1} to ${state.targetLanguage.label}…",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = palette.textMuted
+                            )
+                        }
+                    }
+
+                    state.translatedText.isBlank() -> {
+                        Column(
+                            modifier = Modifier
+                                .align(Alignment.Center)
+                                .padding(horizontal = 32.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Text(
+                                text = state.errorHint ?: "Could not translate this page right now.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = palette.textMuted,
+                                textAlign = TextAlign.Center
+                            )
+                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                Button(
+                                    onClick = onRetry,
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = palette.accent,
+                                        contentColor = palette.background
+                                    )
+                                ) {
+                                    Text("Retry")
+                                }
+                                TextButton(onClick = onShowOriginal) {
+                                    Text("Show Original", color = palette.text)
+                                }
+                            }
+                        }
+                    }
+
+                    else -> {
+                        val readingSp = settings.fontSizeSp.coerceIn(14f, 26f)
+                        val lineHeightSp = (readingSp * settings.lineSpacing.coerceIn(1.3f, 1.9f))
+                        val marginDp = settings.marginDp.coerceIn(16f, 36f).dp
+
+                        Column(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .verticalScroll(rememberScrollState())
+                                .padding(horizontal = marginDp, vertical = 22.dp)
+                        ) {
+                            Text(
+                                text = "Page ${state.pageIndex + 1} · ${state.targetLanguage.label}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = palette.textMuted
+                            )
+                            Spacer(modifier = Modifier.height(14.dp))
+                            CompositionLocalProvider(
+                                LocalLayoutDirection provides if (state.targetLanguage.isRtl) LayoutDirection.Rtl else LayoutDirection.Ltr
+                            ) {
+                                Text(
+                                    text = state.translatedText,
+                                    style = MaterialTheme.typography.bodyLarge.copy(
+                                        fontFamily = FontFamily.Serif,
+                                        fontSize = readingSp.sp,
+                                        lineHeight = lineHeightSp.sp
+                                    ),
+                                    color = palette.text,
+                                    textAlign = TextAlign.Start,
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            }
+                            if (!state.errorHint.isNullOrBlank()) {
+                                Spacer(modifier = Modifier.height(14.dp))
+                                Text(
+                                    text = state.errorHint,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = palette.textMuted
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(36.dp))
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Tiny, non-distracting Live Countdown Pill in the corner of the Reader Screen (e.g., "14:32").
+ */
+@Composable
+fun ReadingSessionTimerPill(
+    timer: ReadingSessionTimerState,
+    visible: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val palette = LocalFolioPalette.current
+    val mins = timer.remainingSeconds / 60
+    val secs = timer.remainingSeconds % 60
+    val formatted = String.format("%02d:%02d", mins, secs)
+
+    AnimatedVisibility(
+        visible = visible && timer.isActivePillVisible,
+        enter = fadeIn(),
+        exit = fadeOut(),
+        modifier = modifier
+    ) {
+        Surface(
+            onClick = onClick,
+            shape = RoundedCornerShape(18.dp),
+            color = palette.surfaceGlass.copy(alpha = if (timer.isPaused) 0.78f else 0.92f),
+            border = BorderStroke(
+                0.75.dp,
+                if (timer.isPaused) palette.divider else palette.accent.copy(alpha = 0.55f)
+            ),
+            shadowElevation = 4.dp,
+            modifier = Modifier.testTag("reader_session_timer_pill")
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(5.dp)
+            ) {
+                Icon(
+                    imageVector = FolioIcons.Timer,
+                    contentDescription = "Reading session timer $formatted",
+                    tint = if (timer.isPaused) palette.textMuted else palette.accent,
+                    modifier = Modifier.size(13.dp)
+                )
+                Text(
+                    text = if (timer.isPaused) "$formatted ⏸" else formatted,
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        fontWeight = FontWeight.SemiBold
+                    ),
+                    color = if (timer.isPaused) palette.textMuted else palette.text
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Frosted-Glass Reading Session Timer Sheet (15m, 30m, 45m, 60m, Custom + Start/Pause/Reset).
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ReadingSessionTimerSheet(
+    timer: ReadingSessionTimerState,
+    onStartMinutes: (Int) -> Unit,
+    onTogglePause: () -> Unit,
+    onReset: () -> Unit,
+    onAddTenMinutes: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val palette = LocalFolioPalette.current
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    var customInput by remember { mutableStateOf("") }
+    val customParsed = customInput.toIntOrNull()
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = palette.surfaceGlass,
+        contentColor = palette.text,
+        modifier = Modifier.testTag("reading_session_timer_sheet")
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .padding(horizontal = 22.dp)
+                .padding(bottom = 26.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = FolioIcons.Timer,
+                        contentDescription = null,
+                        tint = palette.accent,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Text(
+                        text = "Reading Session Timer",
+                        style = MaterialTheme.typography.titleMedium.copy(fontFamily = FontFamily.Serif),
+                        color = palette.text
+                    )
+                }
+                IconButton(onClick = onDismiss) {
+                    Icon(
+                        imageVector = Icons.Outlined.Close,
+                        contentDescription = "Close timer",
+                        tint = palette.textMuted
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            // Countdown Display
+            val displaySec = if (timer.remainingSeconds > 0) timer.remainingSeconds else timer.configuredMinutes * 60
+            val mm = displaySec / 60
+            val ss = displaySec % 60
+            Text(
+                text = String.format("%02d:%02d", mm, ss),
+                style = MaterialTheme.typography.displayMedium.copy(
+                    fontFamily = FontFamily.Serif,
+                    fontWeight = FontWeight.Medium
+                ),
+                color = if (timer.isRunning) palette.accent else palette.text
+            )
+            Text(
+                text = when {
+                    timer.isRunning -> "Session in progress"
+                    timer.isPaused -> "Paused"
+                    else -> "Choose a duration to begin"
+                },
+                style = MaterialTheme.typography.labelMedium,
+                color = palette.textMuted
+            )
+
+            // Active Timer Controls (Pause/Resume, +10m, Reset)
+            if (timer.isActivePillVisible) {
+                Spacer(modifier = Modifier.height(16.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Button(
+                        onClick = onTogglePause,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = palette.accent,
+                            contentColor = palette.background
+                        ),
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(48.dp)
+                            .testTag("session_timer_pause_resume")
+                    ) {
+                        Text(if (timer.isRunning) "Pause" else "Resume")
+                    }
+                    Surface(
+                        onClick = onAddTenMinutes,
+                        shape = RoundedCornerShape(12.dp),
+                        color = palette.background.copy(alpha = 0.7f),
+                        border = BorderStroke(0.75.dp, palette.divider),
+                        modifier = Modifier
+                            .height(48.dp)
+                            .testTag("session_timer_add_ten")
+                    ) {
+                        Box(
+                            contentAlignment = Alignment.Center,
+                            modifier = Modifier.padding(horizontal = 14.dp)
+                        ) {
+                            Text(
+                                text = "+10m",
+                                style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
+                                color = palette.text
+                            )
+                        }
+                    }
+                    Surface(
+                        onClick = onReset,
+                        shape = RoundedCornerShape(12.dp),
+                        color = palette.background.copy(alpha = 0.7f),
+                        border = BorderStroke(0.75.dp, palette.divider),
+                        modifier = Modifier
+                            .height(48.dp)
+                            .testTag("session_timer_reset")
+                    ) {
+                        Box(
+                            contentAlignment = Alignment.Center,
+                            modifier = Modifier.padding(horizontal = 14.dp)
+                        ) {
+                            Text(
+                                text = "Reset",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = palette.textMuted
+                            )
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(18.dp))
+            HorizontalDivider(color = palette.divider, thickness = 0.5.dp)
+            Spacer(modifier = Modifier.height(14.dp))
+
+            // Quick Presets
+            Text(
+                text = "Quick Presets",
+                style = MaterialTheme.typography.labelMedium,
+                color = palette.textMuted,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                listOf(15, 30, 45, 60).forEach { mins ->
+                    val isSelected = timer.configuredMinutes == mins && timer.isActivePillVisible
+                    Surface(
+                        onClick = { onStartMinutes(mins) },
+                        shape = RoundedCornerShape(12.dp),
+                        color = if (isSelected) palette.accent else palette.background.copy(alpha = 0.65f),
+                        border = BorderStroke(0.75.dp, if (isSelected) palette.accent else palette.divider),
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(46.dp)
+                            .testTag("session_timer_preset_${mins}m")
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Text(
+                                text = "${mins}m",
+                                style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
+                                color = if (isSelected) palette.background else palette.text
+                            )
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            // Custom Minutes Input + Start
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                OutlinedTextField(
+                    value = customInput,
+                    onValueChange = { raw ->
+                        customInput = raw.filter { it.isDigit() }.take(3)
+                    },
+                    label = { Text("Custom minutes (1–240)") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = KeyboardType.Number,
+                        imeAction = ImeAction.Done
+                    ),
+                    keyboardActions = KeyboardActions(
+                        onDone = {
+                            if (customParsed != null && customParsed in 1..240) {
+                                onStartMinutes(customParsed)
+                            }
+                        }
+                    ),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = palette.accent,
+                        unfocusedBorderColor = palette.divider,
+                        focusedTextColor = palette.text,
+                        unfocusedTextColor = palette.text,
+                        focusedLabelColor = palette.accent,
+                        unfocusedLabelColor = palette.textMuted,
+                        cursorColor = palette.accent
+                    ),
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag("session_timer_custom_input")
+                )
+                Button(
+                    onClick = {
+                        if (customParsed != null && customParsed in 1..240) {
+                            onStartMinutes(customParsed)
+                        }
+                    },
+                    enabled = customParsed != null && customParsed in 1..240,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = palette.accent,
+                        contentColor = palette.background
+                    ),
+                    modifier = Modifier
+                        .height(52.dp)
+                        .testTag("session_timer_custom_start")
+                ) {
+                    Text("Start")
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Calm Completion Dialog shown when the Reading Session Timer hits 00:00.
+ */
+@Composable
+fun SessionTimerCompleteDialog(
+    onDismiss: () -> Unit,
+    onAddTenMinutes: () -> Unit
+) {
+    val palette = LocalFolioPalette.current
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = palette.surface,
+        titleContentColor = palette.text,
+        textContentColor = palette.textMuted,
+        icon = {
+            Icon(
+                imageVector = FolioIcons.Timer,
+                contentDescription = null,
+                tint = palette.accent,
+                modifier = Modifier.size(28.dp)
+            )
+        },
+        title = {
+            Text(
+                text = "Reading session complete!",
+                style = MaterialTheme.typography.titleLarge.copy(fontFamily = FontFamily.Serif),
+                color = palette.text,
+                textAlign = TextAlign.Center
+            )
+        },
+        text = {
+            Text(
+                text = "Great focus. Take a breather, or add 10 more minutes to keep your flow going.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = palette.textMuted,
+                textAlign = TextAlign.Center
+            )
+        },
+        confirmButton = {
+            Button(
+                onClick = onAddTenMinutes,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = palette.accent,
+                    contentColor = palette.background
+                ),
+                modifier = Modifier.testTag("session_complete_add_ten")
+            ) {
+                Text("+10 min")
+            }
+        },
+        dismissButton = {
+            TextButton(
+                onClick = onDismiss,
+                modifier = Modifier.testTag("session_complete_dismiss")
+            ) {
+                Text("Dismiss", color = palette.textMuted)
+            }
+        }
+    )
+}
+
+/**
+ * Compact Numeric "Go to Page" Dialog opened by tapping the page counter (e.g., 559 / 1020).
+ */
+@Composable
+fun GoToPageDialog(
+    currentPage: Int,
+    totalPages: Int,
+    onJumpToPage: (Int) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val palette = LocalFolioPalette.current
+    var input by remember { mutableStateOf("${currentPage + 1}") }
+    val parsed = input.toIntOrNull()
+    val isValid = parsed != null && parsed in 1..totalPages
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = palette.surface,
+        titleContentColor = palette.text,
+        textContentColor = palette.textMuted,
+        title = {
+            Text(
+                text = "Go to Page",
+                style = MaterialTheme.typography.titleLarge.copy(fontFamily = FontFamily.Serif),
+                color = palette.text
+            )
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    text = "Enter a page number between 1 and $totalPages.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = palette.textMuted
+                )
+                OutlinedTextField(
+                    value = input,
+                    onValueChange = { raw ->
+                        input = raw.filter { it.isDigit() }.take(6)
+                    },
+                    singleLine = true,
+                    placeholder = { Text("1 – $totalPages", color = palette.textMuted) },
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = KeyboardType.Number,
+                        imeAction = ImeAction.Go
+                    ),
+                    keyboardActions = KeyboardActions(
+                        onGo = {
+                            if (isValid && parsed != null) {
+                                onJumpToPage(parsed - 1)
+                                onDismiss()
+                            }
+                        }
+                    ),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = palette.accent,
+                        unfocusedBorderColor = palette.divider,
+                        focusedTextColor = palette.text,
+                        unfocusedTextColor = palette.text,
+                        cursorColor = palette.accent
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("go_to_page_input")
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    if (isValid && parsed != null) {
+                        onJumpToPage(parsed - 1)
+                        onDismiss()
+                    }
+                },
+                enabled = isValid,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = palette.accent,
+                    contentColor = palette.background
+                ),
+                modifier = Modifier.testTag("go_to_page_confirm")
+            ) {
+                Text("Go")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel", color = palette.textMuted)
+            }
+        },
+        modifier = Modifier.testTag("go_to_page_dialog")
+    )
+}
+

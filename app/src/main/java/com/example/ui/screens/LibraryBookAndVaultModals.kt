@@ -16,16 +16,25 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.runtime.DisposableEffect
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.rounded.Add
@@ -79,78 +88,122 @@ import com.example.ui.theme.FolioIcons
 import com.example.ui.theme.LocalFolioPalette
 
 /**
- * Zero-Trace Private Shelf Sheet (only mounted when unlocked via exact Secret Shelf Code in Search).
- * Features:
- * - `+` menu with two clean options: (1) Import Directly, (2) Move from Library (checklist)
- * - 1-tap Lock & Exit button
+ * Full-Screen Zero-Trace Private Shelf matching the exact visual polish of the Main Library.
+ * - Full bookshelf grid using BookShelfCard (respecting user's shelfGridColumns: 2, 3, or 4)
+ * - Subtle Lock icon + "Private Shelf" header badge
+ * - `+` menu: (1) Import Directly, (2) Move from Library checklist
+ * - 1-tap Lock & Exit button + automatic lock when app minimizes (ON_STOP)
+ * - Long-press any book cover for Rename, Change Cover, Restore to Library, or Delete
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun HiddenVaultSheet(
+fun PrivateShelfScreen(
     vaultBooks: List<BookEntity>,
     visibleLibraryBooks: List<BookEntity>,
+    gridColumns: Int,
     onOpenBook: (Long) -> Unit,
     onImportToVault: () -> Unit,
     onMoveBooksToVault: (Set<Long>) -> Unit,
+    onRenameBookClick: (BookEntity) -> Unit,
+    onChangeCoverClick: (BookEntity) -> Unit,
     onRestoreBook: (BookEntity) -> Unit,
     onDeleteBook: (BookEntity) -> Unit,
     onLockVault: () -> Unit
 ) {
     val palette = LocalFolioPalette.current
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val lifecycleOwner = LocalLifecycleOwner.current
+
     var showAddMenu by remember { mutableStateOf(false) }
     var showMoveChecklist by remember { mutableStateOf(false) }
     var selectedToMove by remember { mutableStateOf(emptySet<Long>()) }
+    var managingPrivateBook by remember { mutableStateOf<BookEntity?>(null) }
 
-    ModalBottomSheet(
-        onDismissRequest = onLockVault,
-        sheetState = sheetState,
-        containerColor = palette.surfaceGlass,
-        contentColor = palette.text,
-        dragHandle = { SheetDragHandle() }
+    // Immediately auto-lock Private Shelf when the app goes to background
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_STOP) {
+                onLockVault()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
+
+    val safeCols = gridColumns.coerceIn(2, 4)
+    val hSpacing = when (safeCols) {
+        4 -> 10.dp
+        3 -> 13.dp
+        else -> 18.dp
+    }
+    val vSpacing = when (safeCols) {
+        4 -> 16.dp
+        3 -> 20.dp
+        else -> 24.dp
+    }
+
+    Surface(
+        color = palette.background,
+        modifier = Modifier
+            .fillMaxSize()
+            .testTag("private_shelf_fullscreen")
     ) {
         Column(
             modifier = Modifier
-                .fillMaxWidth()
-                .fillMaxHeight(0.78f)
+                .fillMaxSize()
+                .statusBarsPadding()
                 .navigationBarsPadding()
-                .padding(horizontal = 20.dp)
         ) {
+            // Editorial Private Shelf Header
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 20.dp, end = 16.dp, top = 16.dp, bottom = 12.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Icon(
-                        imageVector = FolioIcons.Lock,
-                        contentDescription = null,
-                        tint = palette.accent,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Column {
-                        Text(
-                            text = "Private Shelf",
-                            style = MaterialTheme.typography.titleLarge.copy(fontFamily = FontFamily.Serif),
-                            color = palette.text
-                        )
-                        Text(
-                            text = "Zero-trace · Hidden from library & stats",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = palette.textMuted
-                        )
+                Column(modifier = Modifier.weight(1f)) {
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = palette.accent.copy(alpha = 0.14f),
+                        border = BorderStroke(0.75.dp, palette.accent.copy(alpha = 0.45f))
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(
+                                imageVector = FolioIcons.Lock,
+                                contentDescription = null,
+                                tint = palette.accent,
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Text(
+                                text = "Private Shelf",
+                                style = MaterialTheme.typography.titleMedium.copy(
+                                    fontFamily = FontFamily.Serif,
+                                    fontWeight = FontWeight.Medium
+                                ),
+                                color = palette.text
+                            )
+                        }
                     }
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = if (vaultBooks.size == 1) "1 hidden volume · Zero-trace"
+                        else "${vaultBooks.size} hidden volumes · Zero-trace",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = palette.textMuted
+                    )
                 }
 
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    // Clean `+` menu with Import Directly & Move from Library
+                    // Clean `+` menu: Import Directly or Move from Library
                     Box {
                         Surface(
                             onClick = { showAddMenu = true },
@@ -158,7 +211,7 @@ fun HiddenVaultSheet(
                             color = palette.text,
                             contentColor = palette.background,
                             modifier = Modifier
-                                .size(40.dp)
+                                .size(42.dp)
                                 .testTag("vault_add_menu_button")
                         ) {
                             Box(contentAlignment = Alignment.Center) {
@@ -173,14 +226,20 @@ fun HiddenVaultSheet(
                         DropdownMenu(
                             expanded = showAddMenu,
                             onDismissRequest = { showAddMenu = false },
-                            containerColor = palette.surface
+                            containerColor = palette.surfaceGlass,
+                            border = BorderStroke(0.75.dp, palette.divider),
+                            shape = RoundedCornerShape(14.dp)
                         ) {
                             DropdownMenuItem(
                                 text = {
                                     Column {
-                                        Text("Import Directly", color = palette.text, style = MaterialTheme.typography.bodyMedium)
                                         Text(
-                                            "Pick EPUB, PDF, or TXT into Private Shelf",
+                                            text = "Import Directly",
+                                            color = palette.text,
+                                            style = MaterialTheme.typography.bodyMedium
+                                        )
+                                        Text(
+                                            text = "Pick EPUB, PDF, or TXT into Private Shelf",
                                             color = palette.textMuted,
                                             style = MaterialTheme.typography.labelSmall
                                         )
@@ -195,9 +254,13 @@ fun HiddenVaultSheet(
                             DropdownMenuItem(
                                 text = {
                                     Column {
-                                        Text("Move from Library", color = palette.text, style = MaterialTheme.typography.bodyMedium)
                                         Text(
-                                            "Select books from your shelf to hide",
+                                            text = "Move from Library",
+                                            color = palette.text,
+                                            style = MaterialTheme.typography.bodyMedium
+                                        )
+                                        Text(
+                                            text = "Select books from your main shelf to hide",
                                             color = palette.textMuted,
                                             style = MaterialTheme.typography.labelSmall
                                         )
@@ -215,202 +278,303 @@ fun HiddenVaultSheet(
 
                     OutlinedButton(
                         onClick = onLockVault,
-                        border = BorderStroke(0.75.dp, palette.accent),
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                        modifier = Modifier.testTag("vault_lock_button")
+                        border = BorderStroke(0.85.dp, palette.accent),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                        modifier = Modifier
+                            .height(42.dp)
+                            .testTag("vault_lock_button")
                     ) {
-                        Text("Lock & Exit", color = palette.accent, style = MaterialTheme.typography.labelMedium)
+                        Icon(
+                            imageVector = FolioIcons.Lock,
+                            contentDescription = null,
+                            tint = palette.accent,
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Spacer(modifier = Modifier.width(5.dp))
+                        Text(
+                            text = "Lock & Exit",
+                            color = palette.accent,
+                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold)
+                        )
                     }
                 }
             }
 
-            Spacer(modifier = Modifier.height(14.dp))
-            HorizontalDivider(color = palette.divider, thickness = 0.5.dp)
+            HorizontalDivider(
+                color = palette.divider,
+                thickness = 0.5.dp,
+                modifier = Modifier.padding(horizontal = 20.dp)
+            )
 
             if (showMoveChecklist) {
-                // Inline Checklist: Move visible Library books into Private Shelf
-                Spacer(modifier = Modifier.height(12.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                // Full-screen Move from Library checklist view
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 20.dp, vertical = 12.dp)
                 ) {
-                    Text(
-                        text = "Move from Library",
-                        style = MaterialTheme.typography.titleMedium.copy(fontFamily = FontFamily.Serif),
-                        color = palette.text
-                    )
-                    TextButton(onClick = { showMoveChecklist = false }) {
-                        Text("Cancel", color = palette.textMuted)
-                    }
-                }
-
-                if (visibleLibraryBooks.isEmpty()) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .weight(1f),
-                        contentAlignment = Alignment.Center
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = "No visible books available in your Library.",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = palette.textMuted
+                            text = "Move from Library",
+                            style = MaterialTheme.typography.titleMedium.copy(fontFamily = FontFamily.Serif),
+                            color = palette.text
                         )
+                        TextButton(onClick = { showMoveChecklist = false }) {
+                            Text("Cancel", color = palette.textMuted)
+                        }
                     }
-                } else {
-                    LazyColumn(
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                        contentPadding = PaddingValues(vertical = 8.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .weight(1f)
-                    ) {
-                        items(visibleLibraryBooks, key = { it.id }) { book ->
-                            val checked = book.id in selectedToMove
-                            Surface(
-                                onClick = {
-                                    selectedToMove = if (checked) selectedToMove - book.id else selectedToMove + book.id
-                                },
-                                shape = RoundedCornerShape(12.dp),
-                                color = if (checked) palette.accent.copy(alpha = 0.14f) else palette.background.copy(alpha = 0.65f),
-                                border = BorderStroke(
-                                    width = if (checked) 1.2.dp else 0.75.dp,
-                                    color = if (checked) palette.accent else palette.divider
-                                ),
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
-                                    verticalAlignment = Alignment.CenterVertically
+
+                    if (visibleLibraryBooks.isEmpty()) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .weight(1f),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = "No visible books available in your Library.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = palette.textMuted
+                            )
+                        }
+                    } else {
+                        LazyColumn(
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                            contentPadding = PaddingValues(vertical = 8.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .weight(1f)
+                        ) {
+                            items(visibleLibraryBooks, key = { it.id }) { book ->
+                                val checked = book.id in selectedToMove
+                                Surface(
+                                    onClick = {
+                                        selectedToMove = if (checked) selectedToMove - book.id else selectedToMove + book.id
+                                    },
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = if (checked) palette.accent.copy(alpha = 0.14f) else palette.surface,
+                                    border = BorderStroke(
+                                        width = if (checked) 1.2.dp else 0.75.dp,
+                                        color = if (checked) palette.accent else palette.divider
+                                    ),
+                                    modifier = Modifier.fillMaxWidth()
                                 ) {
-                                    Checkbox(
-                                        checked = checked,
-                                        onCheckedChange = { on ->
-                                            selectedToMove = if (on) selectedToMove + book.id else selectedToMove - book.id
-                                        },
-                                        colors = CheckboxDefaults.colors(
-                                            checkedColor = palette.accent,
-                                            uncheckedColor = palette.textMuted,
-                                            checkmarkColor = palette.background
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Checkbox(
+                                            checked = checked,
+                                            onCheckedChange = { on ->
+                                                selectedToMove = if (on) selectedToMove + book.id else selectedToMove - book.id
+                                            },
+                                            colors = CheckboxDefaults.colors(
+                                                checkedColor = palette.accent,
+                                                uncheckedColor = palette.textMuted,
+                                                checkmarkColor = palette.background
+                                            )
                                         )
-                                    )
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Text(
-                                            text = book.title,
-                                            style = MaterialTheme.typography.titleSmall.copy(fontFamily = FontFamily.Serif),
-                                            color = palette.text,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                        Text(
-                                            text = "${book.author} · ${book.bookFormat.badge}",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = palette.textMuted,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = book.title,
+                                                style = MaterialTheme.typography.titleSmall.copy(fontFamily = FontFamily.Serif),
+                                                color = palette.text,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                            Text(
+                                                text = "${book.author} · ${book.bookFormat.badge}",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = palette.textMuted,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
                                     }
                                 }
                             }
                         }
-                    }
 
-                    Spacer(modifier = Modifier.height(10.dp))
-                    Button(
-                        onClick = {
-                            onMoveBooksToVault(selectedToMove)
-                            selectedToMove = emptySet()
-                            showMoveChecklist = false
-                        },
-                        enabled = selectedToMove.isNotEmpty(),
-                        shape = RoundedCornerShape(12.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = palette.accent,
-                            contentColor = palette.background
-                        ),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(48.dp)
-                            .padding(bottom = 8.dp)
-                            .testTag("vault_confirm_move_button")
-                    ) {
-                        Text(
-                            text = if (selectedToMove.isEmpty()) "Select books to move"
-                            else "Move ${selectedToMove.size} to Private Shelf"
-                        )
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Button(
+                            onClick = {
+                                onMoveBooksToVault(selectedToMove)
+                                selectedToMove = emptySet()
+                                showMoveChecklist = false
+                            },
+                            enabled = selectedToMove.isNotEmpty(),
+                            shape = RoundedCornerShape(14.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = palette.accent,
+                                contentColor = palette.background
+                            ),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(50.dp)
+                                .testTag("vault_confirm_move_button")
+                        ) {
+                            Text(
+                                text = if (selectedToMove.isEmpty()) "Select books to move"
+                                else "Move ${selectedToMove.size} to Private Shelf"
+                            )
+                        }
                     }
                 }
             } else if (vaultBooks.isEmpty()) {
                 Box(
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f),
+                        .fillMaxSize()
+                        .padding(32.dp),
                     contentAlignment = Alignment.Center
                 ) {
-                    Text(
-                        text = "Your Private Shelf is empty.\nTap + above to import directly or move books from your Library.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = palette.textMuted,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.padding(24.dp)
-                    )
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Icon(
+                            imageVector = FolioIcons.Lock,
+                            contentDescription = null,
+                            tint = palette.textMuted.copy(alpha = 0.55f),
+                            modifier = Modifier.size(44.dp)
+                        )
+                        Spacer(modifier = Modifier.height(14.dp))
+                        Text(
+                            text = "Private Shelf is empty",
+                            style = MaterialTheme.typography.titleMedium.copy(fontFamily = FontFamily.Serif),
+                            color = palette.text
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = "Tap + above to import directly or move volumes from your Library. Long-press any book cover here to manage or restore it.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = palette.textMuted,
+                            textAlign = TextAlign.Center
+                        )
+                    }
                 }
             } else {
-                LazyColumn(
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                    contentPadding = PaddingValues(vertical = 14.dp),
+                // Full-screen Bookshelf Grid identical to Main Library
+                LazyVerticalGrid(
+                    columns = GridCells.Fixed(safeCols),
+                    contentPadding = PaddingValues(
+                        start = 20.dp,
+                        end = 20.dp,
+                        top = 18.dp,
+                        bottom = 36.dp
+                    ),
+                    horizontalArrangement = Arrangement.spacedBy(hSpacing),
+                    verticalArrangement = Arrangement.spacedBy(vSpacing),
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f)
+                        .fillMaxSize()
+                        .testTag("private_shelf_bookshelf_grid")
                 ) {
                     items(vaultBooks, key = { it.id }) { book ->
-                        Surface(
+                        BookShelfCard(
+                            book = book,
+                            gridColumns = safeCols,
                             onClick = { onOpenBook(book.id) },
-                            shape = RoundedCornerShape(12.dp),
-                            color = palette.background.copy(alpha = 0.7f),
-                            border = BorderStroke(0.75.dp, palette.divider),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        text = book.title,
-                                        style = MaterialTheme.typography.titleMedium.copy(fontFamily = FontFamily.Serif),
-                                        color = palette.text,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                    Text(
-                                        text = "${book.author} · ${book.bookFormat.badge}",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = palette.textMuted,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                }
-                                TextButton(onClick = { onRestoreBook(book) }) {
-                                    Text("Restore", color = palette.accent, style = MaterialTheme.typography.labelMedium)
-                                }
-                                IconButton(
-                                    onClick = { onDeleteBook(book) },
-                                    modifier = Modifier.size(40.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = FolioIcons.Delete,
-                                        contentDescription = "Delete volume",
-                                        tint = palette.textMuted,
-                                        modifier = Modifier.size(18.dp)
-                                    )
-                                }
-                            }
-                        }
+                            onLongClick = { managingPrivateBook = book }
+                        )
                     }
                 }
             }
+        }
+    }
+
+    // Long-press Management Sheet for Private Shelf books
+    managingPrivateBook?.let { target ->
+        PrivateBookManageSheet(
+            book = target,
+            onRenameClick = { onRenameBookClick(target) },
+            onChangeCoverClick = { onChangeCoverClick(target) },
+            onRestoreToLibrary = { onRestoreBook(target) },
+            onDelete = { onDeleteBook(target) },
+            onDismiss = { managingPrivateBook = null }
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun PrivateBookManageSheet(
+    book: BookEntity,
+    onRenameClick: () -> Unit,
+    onChangeCoverClick: () -> Unit,
+    onRestoreToLibrary: () -> Unit,
+    onDelete: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val palette = LocalFolioPalette.current
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = palette.surfaceGlass,
+        contentColor = palette.text,
+        dragHandle = { SheetDragHandle() }
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .padding(horizontal = 22.dp, vertical = 10.dp)
+        ) {
+            Text(
+                text = book.title,
+                style = MaterialTheme.typography.titleLarge.copy(fontFamily = FontFamily.Serif),
+                color = palette.text,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = "${book.author} · Private Shelf",
+                style = MaterialTheme.typography.bodySmall.copy(fontStyle = FontStyle.Italic),
+                color = palette.textMuted
+            )
+
+            Spacer(modifier = Modifier.height(14.dp))
+            HorizontalDivider(color = palette.divider, thickness = 0.5.dp)
+
+            ManageActionRow(
+                icon = FolioIcons.Undo,
+                label = "Restore to Main Library",
+                tint = palette.accent,
+                onClick = {
+                    onRestoreToLibrary()
+                    onDismiss()
+                },
+                testTag = "private_manage_restore_row"
+            )
+            ManageActionRow(
+                icon = FolioIcons.EditNote,
+                label = "Rename",
+                tint = palette.text,
+                onClick = {
+                    onDismiss()
+                    onRenameClick()
+                }
+            )
+            ManageActionRow(
+                icon = FolioIcons.ImageCover,
+                label = "Change Cover",
+                tint = palette.text,
+                onClick = {
+                    onDismiss()
+                    onChangeCoverClick()
+                }
+            )
+            ManageActionRow(
+                icon = FolioIcons.Delete,
+                label = "Delete Volume",
+                tint = Color(0xFFD14B4B),
+                onClick = {
+                    onDelete()
+                    onDismiss()
+                }
+            )
+            Spacer(modifier = Modifier.height(10.dp))
         }
     }
 }

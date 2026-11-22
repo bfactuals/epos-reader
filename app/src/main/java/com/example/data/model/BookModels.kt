@@ -37,12 +37,14 @@ enum class TranslationLanguage(
     val label: String,
     val myMemoryCode: String,
     val promptName: String,
-    val nativeName: String
+    val nativeName: String,
+    val isRtl: Boolean = false
 ) {
     HINDI("hi", "Hindi", "hi", "Hindi (Devanagari script)", "हिन्दी"),
     ENGLISH("en", "English", "en", "English", "English"),
     HINGLISH("hi-Latn", "Hinglish", "hi", "Hinglish (natural Hindi written in Latin/Roman script)", "Hindi · Latin"),
-    URDU("ur", "Urdu", "ur", "Urdu", "اردو"),
+    ARABIC("ar", "Arabic", "ar", "Arabic", "العربية", isRtl = true),
+    URDU("ur", "Urdu", "ur", "Urdu", "اردو", isRtl = true),
     MARATHI("mr", "Marathi", "mr", "Marathi", "मराठी"),
     BENGALI("bn", "Bengali", "bn", "Bengali", "বাংলা"),
     TAMIL("ta", "Tamil", "ta", "Tamil", "தமிழ்"),
@@ -178,19 +180,22 @@ data class ReaderSettings(
     val pageStiffness: Float = 0.55f, // 0.2f (supple) .. 1.0f (crisp)
     // Reading Comfort Tools
     val warmthFilter: Float = 0f, // 0f..0.65f blue-light amber warmth
-    val brightnessLevel: Float = 1.0f, // 0.15f..1.0f left-edge dimmer
+    val useSystemBrightness: Boolean = true,
+    val brightnessLevel: Float = 0.85f, // 0.05f..1.0f custom reader brightness
     val readingRulerEnabled: Boolean = false,
     val bionicModeEnabled: Boolean = false,
     val keepScreenAwake: Boolean = true,
     val oneHandedTapMode: Boolean = false,
     val pdfAutoCropEnabled: Boolean = false,
     val ambientSoundMode: AmbientSoundMode = AmbientSoundMode.OFF,
-    val ambientVolume: Float = 0.45f,
+    val ambientVolume: Float = 0.55f,
     val ttsSpeed: Float = 1.0f,
     val autoFlipSeconds: Int = 0, // 0 = off, else 8 / 15 / 25 / 40
     val dailyGoalTarget: Int = 20,
     val dailyGoalUnit: DailyGoalUnit = DailyGoalUnit.MINUTES,
     val defaultTargetLanguage: TranslationLanguage = TranslationLanguage.HINDI,
+    val fullPageTranslateEnabled: Boolean = false,
+    val shelfGridColumns: Int = 2, // 2, 3, or 4 columns
     val geminiApiKey: String = "",
     val hasDismissedFirstTimeGreeting: Boolean = false,
     val hasSeededWelcomeGuide: Boolean = false

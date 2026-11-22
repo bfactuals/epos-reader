@@ -38,6 +38,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.engine.curl.PageCurlCanvas
 import com.example.engine.export.QuoteCardAndExport
@@ -58,6 +61,49 @@ fun ReaderScreen(
     val topInsetPx = WindowInsets.statusBars.getTop(density)
     val bottomInsetPx = WindowInsets.navigationBars.getBottom(density)
     var canvasSize by remember { mutableStateOf(IntSize.Zero) }
+    var showGoToPageDialog by remember { mutableStateOf(false) }
+
+    // Track active foreground Reader lifecycle so Reading Stats & Ambient Sound run ONLY while actively reading
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_RESUME -> viewModel.setReadingActive(true)
+                Lifecycle.Event.ON_PAUSE, Lifecycle.Event.ON_STOP -> viewModel.setReadingActive(false)
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        if (lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
+            viewModel.setReadingActive(true)
+        }
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            viewModel.setReadingActive(false)
+        }
+    }
+
+    // Apply real Android screen brightness (or restore System brightness) cleanly
+    DisposableEffect(settings.useSystemBrightness, settings.brightnessLevel) {
+        val window = (context as? Activity)?.window
+        if (window != null) {
+            val lp = window.attributes
+            lp.screenBrightness = if (settings.useSystemBrightness) {
+                WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+            } else {
+                settings.brightnessLevel.coerceIn(0.05f, 1.0f)
+            }
+            window.attributes = lp
+        }
+        onDispose {
+            val w = (context as? Activity)?.window
+            if (w != null) {
+                val lp = w.attributes
+                lp.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+                w.attributes = lp
+            }
+        }
+    }
 
     // Keep Screen Awake while reading (FLAG_KEEP_SCREEN_ON)
     DisposableEffect(settings.keepScreenAwake) {
@@ -75,6 +121,10 @@ fun ReaderScreen(
     // Smart Back navigation: close active overlays / dialogs / sheets before returning to Library
     BackHandler {
         when {
+            showGoToPageDialog -> showGoToPageDialog = false
+            uiState.sessionTimer.showCompleteAlert -> viewModel.dismissSessionTimerAlert()
+            uiState.sessionTimer.isSheetOpen -> viewModel.openSessionTimerSheet(false)
+            uiState.fullPageTranslation != null -> viewModel.dismissFullPageTranslation()
             uiState.quoteCardQuote != null -> viewModel.dismissQuoteCard()
             uiState.editingNoteHighlight != null -> viewModel.dismissNoteEditor()
             uiState.pdfSelectionPromptText != null -> viewModel.dismissPdfSelectionPrompt()
@@ -152,13 +202,13 @@ fun ReaderScreen(
             )
         }
 
-        // 1c. In-App Left-Edge Brightness / Dimmer Overlay (non-touch-blocking)
-        if (settings.brightnessLevel < 0.99f) {
-            val dimAlpha = ((1f - settings.brightnessLevel).coerceIn(0f, 0.85f) * 0.78f)
+        // 1c. Extra-Dim Scrim Overlay ONLY when custom brightness is set below 22% (hardware backlight handles 22%..100%)
+        if (!settings.useSystemBrightness && settings.brightnessLevel < 0.22f) {
+            val extraDimAlpha = ((0.22f - settings.brightnessLevel) / 0.17f).coerceIn(0f, 1f) * 0.48f
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(Color.Black.copy(alpha = dimAlpha))
+                    .background(Color.Black.copy(alpha = extraDimAlpha))
             )
         }
 
@@ -275,6 +325,32 @@ fun ReaderScreen(
                 .padding(top = 84.dp)
         )
 
+        // 2i. Subtle Corner Live Reading Session Timer Pill (e.g., "14:32")
+        ReadingSessionTimerPill(
+            timer = uiState.sessionTimer,
+            visible = !uiState.isOverlayVisible && uiState.fullPageTranslation == null,
+            onClick = { viewModel.openSessionTimerSheet(true) },
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .statusBarsPadding()
+                .padding(top = 10.dp, end = 14.dp)
+        )
+
+        // 2j. Unobtrusive Corner 1-Tap Full-Page Translation Button (default OFF; enabled in settings)
+        FloatingTranslatePagePill(
+            visible = settings.fullPageTranslateEnabled &&
+                !uiState.isOverlayVisible &&
+                uiState.fullPageTranslation == null &&
+                uiState.activeSelection == null &&
+                uiState.activeTranslation == null,
+            targetLanguage = settings.defaultTargetLanguage,
+            onClick = { viewModel.translateCurrentPage() },
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .navigationBarsPadding()
+                .padding(end = 16.dp, bottom = 26.dp)
+        )
+
         // 3. Temporary 5-Second "Return to Page X" Pill (INTACT)
         ReturnToPagePill(
             originPage = uiState.returnToPageOrigin,
@@ -312,14 +388,18 @@ fun ReaderScreen(
             }
         }
 
-        // 5. Progressive Disclosure Frosted-Glass Top Bar (with Pin icon)
+        // 5. Progressive Disclosure Frosted-Glass Top Bar (with Timer, Pin, and optional Full-Page Translate)
         ReaderTopBar(
-            visible = uiState.isOverlayVisible,
+            visible = uiState.isOverlayVisible && uiState.fullPageTranslation == null,
             title = uiState.book?.title.orEmpty(),
             chapterSubtitle = uiState.currentChapterTitle,
             isBookmarked = uiState.isCurrentPageBookmarked,
             isPinned = uiState.pinnedPageIndex == uiState.currentPage,
+            isSessionTimerActive = uiState.sessionTimer.isActivePillVisible,
+            showFullPageTranslateAction = settings.fullPageTranslateEnabled,
             onBack = onNavigateBack,
+            onOpenSessionTimer = { viewModel.openSessionTimerSheet(true) },
+            onTranslateFullPage = { viewModel.translateCurrentPage() },
             onTogglePin = { viewModel.togglePinCurrentPage() },
             onOpenSearch = { viewModel.openSearch(true) },
             onOpenNotebook = { viewModel.openNotebook(true) },
@@ -329,7 +409,7 @@ fun ReaderScreen(
 
         // 6. Progressive Disclosure Frosted-Glass Bottom Bar + Scrubber + [Appearance | Tools] Sheet
         ReaderBottomSheetBar(
-            visible = uiState.isOverlayVisible,
+            visible = uiState.isOverlayVisible && uiState.fullPageTranslation == null,
             isExpanded = uiState.isSettingsExpanded,
             isPdf = uiState.isPdf,
             currentPage = uiState.currentPage,
@@ -337,10 +417,15 @@ fun ReaderScreen(
             settings = settings,
             isTtsPlaying = uiState.isTtsPlaying,
             sleepTimerRemainingSec = uiState.sleepTimerRemainingSec,
+            sessionTimer = uiState.sessionTimer,
             chapterTitleForPage = { pageIdx -> viewModel.getChapterTitleForPage(pageIdx) },
             onScrubCommit = { targetPage -> viewModel.jumpToPage(targetPage, offerReturnPill = true) },
+            onOpenGoToPage = { showGoToPageDialog = true },
+            onOpenSessionTimer = { viewModel.openSessionTimerSheet(true) },
             onSetExpanded = { expanded -> viewModel.setSettingsExpanded(expanded) },
             onUpdateSettings = { transform -> viewModel.updateSettings(transform) },
+            onSetUseSystemBrightness = { useSys -> viewModel.setUseSystemBrightness(useSys) },
+            onSetCustomBrightness = { lvl -> viewModel.setCustomBrightness(lvl) },
             onToggleTts = { viewModel.toggleTts() },
             onSetTtsSpeed = { spd -> viewModel.setTtsSpeed(spd) },
             onSetSleepTimerMinutes = { mins -> viewModel.setSleepTimerMinutes(mins) },
@@ -354,6 +439,18 @@ fun ReaderScreen(
                 pinnedPageIndex = uiState.pinnedPageIndex!!,
                 bitmap = uiState.pinnedPageBitmap,
                 onClose = { viewModel.closePinnedPagePeek() }
+            )
+        }
+
+        // 6c. Full-Page Translated Reading Overlay (1-Tap Toggle Back to Original)
+        uiState.fullPageTranslation?.let { fullPageState ->
+            FullPageTranslationOverlay(
+                state = fullPageState,
+                settings = settings,
+                onSwitchLanguage = { lang -> viewModel.switchFullPageTranslationLanguage(lang) },
+                onRetry = { viewModel.translateCurrentPage(fullPageState.targetLanguage) },
+                onCopyAll = { txt -> copyToClipboard(txt) },
+                onShowOriginal = { viewModel.dismissFullPageTranslation() }
             )
         }
     }
@@ -429,6 +526,36 @@ fun ReaderScreen(
             onSave = { excerpt, colorIdx, note -> viewModel.savePdfHighlight(excerpt, colorIdx, note) },
             onCopy = { copyToClipboard(it) },
             onDismiss = { viewModel.dismissPdfSelectionPrompt() }
+        )
+    }
+
+    // 12. Reading Session Timer Sheet
+    if (uiState.sessionTimer.isSheetOpen) {
+        ReadingSessionTimerSheet(
+            timer = uiState.sessionTimer,
+            onStartMinutes = { mins -> viewModel.startSessionTimer(mins) },
+            onTogglePause = { viewModel.togglePauseSessionTimer() },
+            onReset = { viewModel.resetSessionTimer() },
+            onAddTenMinutes = { viewModel.addTenMinutesToSessionTimer() },
+            onDismiss = { viewModel.openSessionTimerSheet(false) }
+        )
+    }
+
+    // 13. Reading Session Complete Alert Dialog
+    if (uiState.sessionTimer.showCompleteAlert) {
+        SessionTimerCompleteDialog(
+            onDismiss = { viewModel.dismissSessionTimerAlert() },
+            onAddTenMinutes = { viewModel.addTenMinutesToSessionTimer() }
+        )
+    }
+
+    // 14. Go to Page Numeric Jump Dialog
+    if (showGoToPageDialog) {
+        GoToPageDialog(
+            currentPage = uiState.currentPage,
+            totalPages = uiState.totalPages.coerceAtLeast(1),
+            onJumpToPage = { targetIdx -> viewModel.jumpToPage(targetIdx, offerReturnPill = true) },
+            onDismiss = { showGoToPageDialog = false }
         )
     }
 }

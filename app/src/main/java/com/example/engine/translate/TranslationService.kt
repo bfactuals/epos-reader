@@ -19,21 +19,42 @@ data class TranslationResult(
     val errorHint: String? = null
 )
 
+data class FullPageTranslationResult(
+    val translatedText: String,
+    val targetLanguage: TranslationLanguage,
+    val sourceLanguage: String,
+    val fromCache: Boolean,
+    val usedGemini: Boolean,
+    val errorHint: String? = null
+)
+
 /**
- * Lightweight zero-dependency 14-language Translator with automatic source language detection
- * and Room offline caching keyed by (text + targetLanguage).
+ * Lightweight zero-dependency 15-language Translator (including Arabic RTL)
+ * with automatic source language detection, multi-paragraph chunked translation,
+ * full-page translation support, and Room offline caching keyed by (text + targetLanguage).
  */
 class TranslationService(private val translationDao: TranslationDao) {
 
+    // In-memory LRU-like cache for full-page translations so toggling Show Original / returning is instant
+    private val fullPageMemoryCache = object : LinkedHashMap<String, String>(24, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>?): Boolean = size > 24
+    }
+
     /**
      * Detects likely source language code via Unicode script blocks and light heuristics.
+     * Distinguishes Arabic vs Urdu within the Arabic script range via Urdu-specific letters.
      */
     fun detectSourceLanguageCode(text: String): String {
+        var hasArabicBlock = false
+        var hasUrduSpecific = false
         for (ch in text) {
             val code = ch.code
             when (code) {
                 in 0x0900..0x097F -> return "hi" // Devanagari (Hindi/Marathi)
-                in 0x0600..0x06FF -> return "ur" // Arabic/Urdu
+                in 0x0600..0x06FF -> {
+                    hasArabicBlock = true
+                    if (ch in URDU_SPECIFIC_CHARS) hasUrduSpecific = true
+                }
                 in 0x0980..0x09FF -> return "bn" // Bengali
                 in 0x0B80..0x0BFF -> return "ta" // Tamil
                 in 0x0C00..0x0C7F -> return "te" // Telugu
@@ -42,6 +63,7 @@ class TranslationService(private val translationDao: TranslationDao) {
                 in 0x3040..0x30FF, in 0x4E00..0x9FFF -> return "ja" // Japanese Kana / Kanji
             }
         }
+        if (hasArabicBlock) return if (hasUrduSpecific) "ur" else "ar"
         val lower = text.lowercase()
         if (lower.any { it in "ñ¿¡" }) return "es"
         if (lower.any { it in "äöüß" }) return "de"
@@ -66,6 +88,8 @@ class TranslationService(private val translationDao: TranslationDao) {
             TranslationLanguage.HINDI -> detectedSrc == "hi"
             TranslationLanguage.MARATHI -> detectedSrc == "hi" || detectedSrc == "mr"
             TranslationLanguage.ENGLISH -> detectedSrc == "en"
+            TranslationLanguage.ARABIC -> detectedSrc == "ar"
+            TranslationLanguage.URDU -> detectedSrc == "ur"
             else -> detectedSrc == preferredTarget.myMemoryCode
         }
         val effectiveTarget = if (sameAsPreferred && preferredTarget != TranslationLanguage.ENGLISH) {
@@ -76,6 +100,10 @@ class TranslationService(private val translationDao: TranslationDao) {
         return detectedSrc to effectiveTarget
     }
 
+    /**
+     * Translates a single word, multi-word selection, full sentence, or multi-paragraph selection
+     * cleanly without truncating at 450 characters.
+     */
     suspend fun translate(
         rawText: String,
         targetLanguage: TranslationLanguage,
@@ -83,7 +111,7 @@ class TranslationService(private val translationDao: TranslationDao) {
         optionalGeminiApiKey: String,
         explicitTargetOverride: Boolean = false
     ): TranslationResult = withContext(Dispatchers.IO) {
-        val cleaned = rawText.trim().replace(Regex("\\s+"), " ").take(450)
+        val cleaned = normalizePreservingParagraphs(rawText).take(3000)
         val (detectedSrc, effectiveTarget) = resolveTargetLanguage(
             rawText = cleaned,
             preferredTarget = targetLanguage,
@@ -105,7 +133,7 @@ class TranslationService(private val translationDao: TranslationDao) {
         val trimmedKey = optionalGeminiApiKey.trim()
         if (trimmedKey.isNotEmpty()) {
             val geminiText = runCatching {
-                translateWithGemini(cleaned, effectiveTarget, trimmedKey)
+                translateWithGemini(cleaned, effectiveTarget, trimmedKey, preserveParagraphs = cleaned.contains("\n"))
             }.getOrNull()
             if (!geminiText.isNullOrBlank()) {
                 val entity = persistCache(
@@ -124,14 +152,14 @@ class TranslationService(private val translationDao: TranslationDao) {
             }
         }
 
-        // 3. Free lightweight MyMemory REST endpoint (0 KB deps)
+        // 3. Free lightweight MyMemory REST endpoint with smart chunking for longer passages
         val apiSource = if (detectedSrc == effectiveTarget.myMemoryCode) {
             if (effectiveTarget == TranslationLanguage.ENGLISH) "hi" else "en"
         } else {
             detectedSrc
         }
         val publicText = runCatching {
-            translateWithMyMemory(cleaned, apiSource, effectiveTarget)
+            translateLongTextWithMyMemory(cleaned, apiSource, effectiveTarget)
         }.getOrNull()
         if (!publicText.isNullOrBlank()) {
             val formatted = if (effectiveTarget == TranslationLanguage.HINGLISH) {
@@ -154,7 +182,7 @@ class TranslationService(private val translationDao: TranslationDao) {
             )
         }
 
-        // 4. Built-in offline mini-glossary fallback (Hindi / Hinglish / English)
+        // 4. Built-in offline mini-glossary fallback (Hindi / Hinglish / English / Arabic)
         val offlineHit = lookupOfflineFallback(cleaned.lowercase(), effectiveTarget)
         if (offlineHit != null) {
             val entity = persistCache(
@@ -187,6 +215,173 @@ class TranslationService(private val translationDao: TranslationDao) {
             usedGemini = false,
             errorHint = "Offline or unreachable"
         )
+    }
+
+    /**
+     * Translates an entire visible book page cleanly while preserving paragraph breaks.
+     */
+    suspend fun translateFullPage(
+        pageText: String,
+        targetLanguage: TranslationLanguage,
+        optionalGeminiApiKey: String
+    ): FullPageTranslationResult = withContext(Dispatchers.IO) {
+        val cleaned = normalizePreservingParagraphs(pageText).take(5500)
+        if (cleaned.isBlank()) {
+            return@withContext FullPageTranslationResult(
+                translatedText = "",
+                targetLanguage = targetLanguage,
+                sourceLanguage = "en",
+                fromCache = false,
+                usedGemini = false,
+                errorHint = "This page has no selectable text to translate."
+            )
+        }
+
+        val detectedSrc = detectSourceLanguageCode(cleaned)
+        val memKey = "page|${targetLanguage.code}|${cleaned.hashCode()}|${cleaned.length}"
+        synchronized(fullPageMemoryCache) {
+            fullPageMemoryCache[memKey]
+        }?.let { hit ->
+            return@withContext FullPageTranslationResult(
+                translatedText = hit,
+                targetLanguage = targetLanguage,
+                sourceLanguage = detectedSrc,
+                fromCache = true,
+                usedGemini = false
+            )
+        }
+
+        // 1. Optional Gemini API key handles full pages smoothly in one coherent pass
+        val trimmedKey = optionalGeminiApiKey.trim()
+        if (trimmedKey.isNotEmpty()) {
+            val geminiText = runCatching {
+                translateWithGemini(cleaned, targetLanguage, trimmedKey, preserveParagraphs = true)
+            }.getOrNull()
+            if (!geminiText.isNullOrBlank()) {
+                synchronized(fullPageMemoryCache) { fullPageMemoryCache[memKey] = geminiText }
+                return@withContext FullPageTranslationResult(
+                    translatedText = geminiText,
+                    targetLanguage = targetLanguage,
+                    sourceLanguage = detectedSrc,
+                    fromCache = false,
+                    usedGemini = true
+                )
+            }
+        }
+
+        // 2. Chunked MyMemory translation preserving paragraph structure
+        val apiSource = if (detectedSrc == targetLanguage.myMemoryCode) {
+            if (targetLanguage == TranslationLanguage.ENGLISH) "hi" else "en"
+        } else {
+            detectedSrc
+        }
+        val translated = runCatching {
+            translateLongTextWithMyMemory(cleaned, apiSource, targetLanguage)
+        }.getOrNull()
+
+        if (!translated.isNullOrBlank()) {
+            val formatted = if (targetLanguage == TranslationLanguage.HINGLISH) {
+                transliterateDevanagariToLatin(translated)
+            } else {
+                translated
+            }
+            synchronized(fullPageMemoryCache) { fullPageMemoryCache[memKey] = formatted }
+            return@withContext FullPageTranslationResult(
+                translatedText = formatted,
+                targetLanguage = targetLanguage,
+                sourceLanguage = detectedSrc,
+                fromCache = false,
+                usedGemini = false
+            )
+        }
+
+        FullPageTranslationResult(
+            translatedText = "",
+            targetLanguage = targetLanguage,
+            sourceLanguage = detectedSrc,
+            fromCache = false,
+            usedGemini = false,
+            errorHint = "Unable to translate page while offline. Connect briefly and try again."
+        )
+    }
+
+    private fun normalizePreservingParagraphs(raw: String): String {
+        return raw.replace("\r\n", "\n")
+            .replace("\r", "\n")
+            .split(Regex("\n\\s*\n"))
+            .map { para -> para.trim().replace(Regex("[ \\t\\n]+"), " ") }
+            .filter { it.isNotBlank() }
+            .joinToString("\n\n")
+            .trim()
+    }
+
+    /**
+     * Splits multi-paragraph or long passages into <= 440-char sentence-aligned chunks
+     * so MyMemory translates entire paragraphs and pages cleanly without truncation.
+     */
+    private fun translateLongTextWithMyMemory(
+        text: String,
+        sourceCode: String,
+        target: TranslationLanguage
+    ): String? {
+        val paragraphs = text.split("\n\n").filter { it.isNotBlank() }
+        if (paragraphs.isEmpty()) return null
+
+        val translatedParagraphs = ArrayList<String>(paragraphs.size)
+        var anySucceeded = false
+
+        for (para in paragraphs) {
+            val chunks = splitIntoChunks(para, maxChunkChars = 430)
+            val chunkResults = ArrayList<String>(chunks.size)
+            for (chunk in chunks) {
+                val res = translateWithMyMemory(chunk, sourceCode, target)
+                if (!res.isNullOrBlank()) {
+                    chunkResults.add(res.trim())
+                    anySucceeded = true
+                } else {
+                    chunkResults.add(chunk)
+                }
+            }
+            translatedParagraphs.add(chunkResults.joinToString(" "))
+        }
+        return if (anySucceeded) translatedParagraphs.joinToString("\n\n") else null
+    }
+
+    private fun splitIntoChunks(paragraph: String, maxChunkChars: Int): List<String> {
+        if (paragraph.length <= maxChunkChars) return listOf(paragraph)
+        val result = mutableListOf<String>()
+        val sentences = paragraph.split(Regex("(?<=[.!?।؟])\\s+"))
+        val current = StringBuilder()
+
+        for (sentence in sentences) {
+            if (sentence.length > maxChunkChars) {
+                if (current.isNotEmpty()) {
+                    result.add(current.toString().trim())
+                    current.clear()
+                }
+                // Word-wrap very long sentences cleanly
+                val words = sentence.split(" ")
+                val sub = StringBuilder()
+                for (w in words) {
+                    if (sub.length + w.length + 1 > maxChunkChars && sub.isNotEmpty()) {
+                        result.add(sub.toString().trim())
+                        sub.clear()
+                    }
+                    if (sub.isNotEmpty()) sub.append(' ')
+                    sub.append(w)
+                }
+                if (sub.isNotEmpty()) result.add(sub.toString().trim())
+            } else {
+                if (current.length + sentence.length + 1 > maxChunkChars && current.isNotEmpty()) {
+                    result.add(current.toString().trim())
+                    current.clear()
+                }
+                if (current.isNotEmpty()) current.append(' ')
+                current.append(sentence)
+            }
+        }
+        if (current.isNotEmpty()) result.add(current.toString().trim())
+        return result
     }
 
     private suspend fun persistCache(
@@ -222,7 +417,7 @@ class TranslationService(private val translationDao: TranslationDao) {
         val conn = (url.openConnection() as HttpURLConnection).apply {
             requestMethod = "GET"
             connectTimeout = 6500
-            readTimeout = 6500
+            readTimeout = 7000
             setRequestProperty("Accept", "application/json")
         }
         return try {
@@ -230,7 +425,15 @@ class TranslationService(private val translationDao: TranslationDao) {
             val body = conn.inputStream.bufferedReader().use { it.readText() }
             val json = JSONObject(body)
             val data = json.optJSONObject("responseData")
-            data?.optString("translatedText")?.takeIf { it.isNotBlank() }
+            val translated = data?.optString("translatedText")?.takeIf { it.isNotBlank() } ?: return null
+            // Avoid returning MyMemory's error banner as a translation
+            if (translated.startsWith("MYMEMORY WARNING", ignoreCase = true) ||
+                translated.startsWith("QUERY LENGTH LIMIT", ignoreCase = true)
+            ) {
+                null
+            } else {
+                translated
+            }
         } finally {
             conn.disconnect()
         }
@@ -239,16 +442,20 @@ class TranslationService(private val translationDao: TranslationDao) {
     private fun translateWithGemini(
         text: String,
         target: TranslationLanguage,
-        apiKey: String
+        apiKey: String,
+        preserveParagraphs: Boolean = false
     ): String? {
-        val instruction =
+        val instruction = if (preserveParagraphs) {
+            "Translate the following book passage naturally and accurately into ${target.promptName}. Preserve paragraph breaks. Output ONLY the translation."
+        } else {
             "Translate the following text naturally and concisely into ${target.promptName}. Output ONLY the translation."
+        }
         val url = URL("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent")
         val conn = (url.openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
             doOutput = true
-            connectTimeout = 8000
-            readTimeout = 10000
+            connectTimeout = 8500
+            readTimeout = 14000
             setRequestProperty("Content-Type", "application/json; charset=UTF-8")
             setRequestProperty("x-goog-api-key", apiKey)
         }
@@ -280,7 +487,8 @@ class TranslationService(private val translationDao: TranslationDao) {
         return when (target) {
             TranslationLanguage.HINDI -> offlineEnToHi[lower]
             TranslationLanguage.HINGLISH -> offlineEnToHi[lower]?.let { transliterateDevanagariToLatin(it) }
-            TranslationLanguage.ENGLISH -> offlineHiToEn[lower]
+            TranslationLanguage.ARABIC -> offlineEnToAr[lower]
+            TranslationLanguage.ENGLISH -> offlineHiToEn[lower] ?: offlineArToEn[lower]
             else -> null
         }
     }
@@ -304,7 +512,6 @@ class TranslationService(private val translationDao: TranslationDao) {
                         i++
                     }
                     else -> {
-                        // Add inherent 'a' unless at end of word
                         val atWordEnd = next == null || next.isWhitespace() || next in ".,!?;:।\"'()-"
                         if (!atWordEnd) sb.append('a')
                     }
@@ -318,6 +525,9 @@ class TranslationService(private val translationDao: TranslationDao) {
     }
 
     companion object {
+        // Urdu-specific characters not used in standard Modern Arabic
+        private val URDU_SPECIFIC_CHARS = setOf('ٹ', 'ڈ', 'ڑ', 'ں', 'ے', 'ہ', 'ھ', 'پ', 'چ', 'ژ', 'گ')
+
         private val offlineEnToHi = mapOf(
             "quiet" to "शांत",
             "book" to "किताब",
@@ -338,6 +548,26 @@ class TranslationService(private val translationDao: TranslationDao) {
             "moments" to "पल"
         )
 
+        private val offlineEnToAr = mapOf(
+            "quiet" to "هادئ",
+            "book" to "كتاب",
+            "books" to "كتب",
+            "story" to "قصة",
+            "stories" to "قصص",
+            "smile" to "ابتسامة",
+            "eyes" to "عيون",
+            "mind" to "عقل",
+            "calm" to "هدوء",
+            "beautiful" to "جميل",
+            "precious" to "ثمين",
+            "page" to "صفحة",
+            "paper" to "ورق",
+            "reading" to "قراءة",
+            "happy" to "سعيد",
+            "world" to "عالم",
+            "moments" to "لحظات"
+        )
+
         private val offlineHiToEn = mapOf(
             "किताब" to "book",
             "कहानी" to "story",
@@ -346,6 +576,16 @@ class TranslationService(private val translationDao: TranslationDao) {
             "सुंदर" to "beautiful",
             "पन्ना" to "page",
             "दुनिया" to "world"
+        )
+
+        private val offlineArToEn = mapOf(
+            "كتاب" to "book",
+            "قصة" to "story",
+            "صفحة" to "page",
+            "قراءة" to "reading",
+            "هادئ" to "quiet",
+            "جميل" to "beautiful",
+            "عالم" to "world"
         )
 
         private val devVowels = mapOf(

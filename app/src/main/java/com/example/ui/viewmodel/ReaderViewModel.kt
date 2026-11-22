@@ -4,12 +4,15 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.PointF
 import android.graphics.RectF
+import android.os.SystemClock
+import android.util.LruCache
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.unit.IntSize
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.example.data.local.BookChapter
 import com.example.data.local.PreferencesRepository
 import com.example.data.model.AmbientSoundMode
 import com.example.data.model.BookEntity
@@ -35,6 +38,7 @@ import com.example.engine.translate.TranslationService
 import com.example.ui.theme.HighlightColors
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -75,6 +79,28 @@ data class ActiveTranslationCard(
     val errorHint: String? = null
 )
 
+data class FullPageTranslationState(
+    val pageIndex: Int,
+    val targetLanguage: TranslationLanguage,
+    val isLoading: Boolean = true,
+    val translatedText: String = "",
+    val fromCache: Boolean = false,
+    val errorHint: String? = null
+)
+
+data class ReadingSessionTimerState(
+    val configuredMinutes: Int = 30,
+    val totalSeconds: Int = 0,
+    val remainingSeconds: Int = 0,
+    val isRunning: Boolean = false,
+    val isPaused: Boolean = false,
+    val isSheetOpen: Boolean = false,
+    val showCompleteAlert: Boolean = false
+) {
+    val isActivePillVisible: Boolean
+        get() = remainingSeconds > 0 && (isRunning || isPaused)
+}
+
 data class ReaderUiState(
     val book: BookEntity? = null,
     val isLoading: Boolean = true,
@@ -104,6 +130,7 @@ data class ReaderUiState(
     val searchGlowAlpha: Float = 0f,
     // Reading & Dictionary Tools
     val activeTranslation: ActiveTranslationCard? = null,
+    val fullPageTranslation: FullPageTranslationState? = null,
     val quoteCardQuote: String? = null,
     val pinnedPageIndex: Int? = null,
     val isPeekingPinnedPage: Boolean = false,
@@ -114,6 +141,7 @@ data class ReaderUiState(
     val showBrightnessIndicator: Boolean = false,
     val isTtsPlaying: Boolean = false,
     val sleepTimerRemainingSec: Int = 0,
+    val sessionTimer: ReadingSessionTimerState = ReadingSessionTimerState(),
     val isAutoFlipPaused: Boolean = false,
     val autoFlipTrigger: Int = 0,
     val toastMessage: String? = null
@@ -141,7 +169,19 @@ class ReaderViewModel(
     }
 
     private var parsedBook: ParsedBook? = null
+    // Full pagination list for normal books (<= 180k chars)
     private var paginatedPages: List<PaginatedPage> = emptyList()
+    // On-demand chapter pagination state for huge books (1000+ pages)
+    private var isLazyChapterMode: Boolean = false
+    private var lazyChapters: List<BookChapter> = emptyList()
+    private var lazyChapterStarts: IntArray = IntArray(0)
+    private var lazyChapterCounts: IntArray = IntArray(0)
+    private val lazyChapterCache = HashMap<Int, List<PaginatedPage>>()
+    private val lazyChapterLock = Any()
+
+    // Lazy PDF text cache (extracted on-demand only when Search / TTS / Translate is used)
+    private var lazyPdfTexts: List<String>? = null
+
     private var currentGeometry: PageTextGeometry? = null
 
     // Viewport metrics
@@ -150,8 +190,14 @@ class ReaderViewModel(
     private var topInsetPx = 0
     private var bottomInsetPx = 0
 
-    // In-memory 3-page + neighbor bitmap cache
-    private val pageCache = LinkedHashMap<Int, Bitmap>(6, 0.75f, true)
+    // Thread-safe 28 MB in-memory LRU Bitmap cache keyed by "${pageIndex}_${visualSignature}"
+    private val pageCache = object : LruCache<String, Bitmap>(28 * 1024) {
+        override fun sizeOf(key: String, value: Bitmap): Int {
+            return (value.allocationByteCount / 1024).coerceAtLeast(1)
+        }
+    }
+
+    private var paginationJob: Job? = null
     private var renderJob: Job? = null
     private var returnPillJob: Job? = null
     private var glowJob: Job? = null
@@ -159,14 +205,60 @@ class ReaderViewModel(
     private var toastJob: Job? = null
     private var brightnessHideJob: Job? = null
     private var sleepTimerJob: Job? = null
+    private var sessionTimerJob: Job? = null
     private var autoFlipJob: Job? = null
     private var readingMinutesJob: Job? = null
-    private var frostFadeJob: Job? = null
+    private var fullPageTranslateJob: Job? = null
 
     private var lastPaginationSignature: String = ""
+    private var lastVisualSignature: String = ""
+    private var lastPageTurnUptimeMs: Long = 0L
+
+    // Strictly counts reading minutes ONLY while ReaderScreen is resumed & foreground
+    @Volatile
+    private var isReaderForegroundActive: Boolean = false
+    private var accumulatedActiveSeconds: Int = 0
 
     init {
+        observeSettings()
         loadBookAndObserve()
+    }
+
+    private fun observeSettings() {
+        viewModelScope.launch {
+            var lastAmbientMode: AmbientSoundMode? = null
+            var lastAutoFlip = -1
+            preferencesRepository.settings.collectLatest { s ->
+                if (isReaderForegroundActive) {
+                    if (s.ambientSoundMode != lastAmbientMode) {
+                        lastAmbientMode = s.ambientSoundMode
+                        audioEngine.setAmbientSound(s.ambientSoundMode, s.ambientVolume)
+                    } else {
+                        audioEngine.updateAmbientVolume(s.ambientVolume)
+                    }
+                } else {
+                    lastAmbientMode = s.ambientSoundMode
+                    audioEngine.updateAmbientVolume(s.ambientVolume)
+                }
+
+                if (s.autoFlipSeconds != lastAutoFlip) {
+                    lastAutoFlip = s.autoFlipSeconds
+                    restartAutoFlipLoop(s.autoFlipSeconds)
+                }
+
+                if (viewportSize.width > 0 && viewportSize.height > 0 && parsedBook != null) {
+                    if (parsedBook is ParsedBook.TextBook) {
+                        repaginateIfNeeded(force = false)
+                    } else {
+                        val visualSig = buildVisualSignature(s, viewportSize.width, viewportSize.height)
+                        if (visualSig != lastVisualSignature) {
+                            lastVisualSignature = visualSig
+                            invalidateAndRenderAroundCurrent()
+                        }
+                    }
+                }
+            }
+        }
     }
 
     private fun loadBookAndObserve() {
@@ -185,7 +277,7 @@ class ReaderViewModel(
                 )
             }
 
-            // Start active minute tracker (STRICTLY skipped if book.isHidden == true)
+            // Start lifecycle-aware active reading minute tracker (STRICTLY skipped if book.isHidden == true)
             if (!entity.isHidden) {
                 startVisibleReadingMinuteTracker()
             }
@@ -203,7 +295,9 @@ class ReaderViewModel(
             launch {
                 repository.getHighlights(bookId).collectLatest { list ->
                     _uiState.update { it.copy(highlights = list) }
-                    invalidateAndRenderAroundCurrent()
+                    if (parsedBook != null && viewportSize.width > 0 && viewportSize.height > 0) {
+                        invalidateAndRenderAroundCurrent()
+                    }
                 }
             }
 
@@ -219,8 +313,13 @@ class ReaderViewModel(
 
             if (parsed is ParsedBook.PdfBook) {
                 val safePage = entity.currentPage.coerceIn(0, (parsed.pageCount - 1).coerceAtLeast(0))
-                val toc = (0 until parsed.pageCount step 5).map { idx ->
-                    ChapterTocItem(title = "Page ${idx + 1}", pageIndex = idx, chapterIndex = idx / 5)
+                val step = when {
+                    parsed.pageCount > 400 -> 25
+                    parsed.pageCount > 120 -> 10
+                    else -> 5
+                }
+                val toc = (0 until parsed.pageCount step step).map { idx ->
+                    ChapterTocItem(title = "Page ${idx + 1}", pageIndex = idx, chapterIndex = idx / step)
                 }
                 _uiState.update { state ->
                     state.copy(
@@ -235,6 +334,7 @@ class ReaderViewModel(
                     )
                 }
                 if (viewportSize.width > 0 && viewportSize.height > 0) {
+                    lastVisualSignature = buildVisualSignature(settings.value, viewportSize.width, viewportSize.height)
                     invalidateAndRenderAroundCurrent()
                 }
             } else {
@@ -242,33 +342,22 @@ class ReaderViewModel(
                     repaginateIfNeeded(force = true)
                 }
             }
+        }
+    }
 
-            // Observe settings changes for typography, PDF auto-crop, ambient sound, auto-flip
-            launch {
-                var lastAmbientMode: AmbientSoundMode? = null
-                var lastAutoFlip = -1
-                preferencesRepository.settings.collectLatest { s ->
-                    if (s.ambientSoundMode != lastAmbientMode) {
-                        lastAmbientMode = s.ambientSoundMode
-                        audioEngine.setAmbientSound(s.ambientSoundMode, s.ambientVolume)
-                    } else {
-                        audioEngine.updateAmbientVolume(s.ambientVolume)
-                    }
-
-                    if (s.autoFlipSeconds != lastAutoFlip) {
-                        lastAutoFlip = s.autoFlipSeconds
-                        restartAutoFlipLoop(s.autoFlipSeconds)
-                    }
-
-                    if (viewportSize.width > 0 && viewportSize.height > 0 && parsedBook != null) {
-                        if (parsedBook is ParsedBook.TextBook) {
-                            repaginateIfNeeded(force = false)
-                        } else {
-                            invalidateAndRenderAroundCurrent()
-                        }
-                    }
-                }
+    /**
+     * Driven strictly by ReaderScreen lifecycle (ON_RESUME = true, ON_PAUSE/ON_STOP/dispose = false).
+     * Ensures reading stats never tick while on Library, Stats, Settings, or app background.
+     */
+    fun setReadingActive(active: Boolean) {
+        isReaderForegroundActive = active
+        val s = settings.value
+        if (active) {
+            if (s.ambientSoundMode != AmbientSoundMode.OFF) {
+                audioEngine.setAmbientSound(s.ambientSoundMode, s.ambientVolume)
             }
+        } else {
+            audioEngine.stopAmbient()
         }
     }
 
@@ -276,13 +365,28 @@ class ReaderViewModel(
         readingMinutesJob?.cancel()
         readingMinutesJob = viewModelScope.launch {
             while (isActive) {
-                delay(60_000L)
-                val book = _uiState.value.book ?: continue
-                repository.recordVisibleReadingActivity(
-                    isHiddenBook = book.isHidden,
-                    deltaMinutes = 1,
-                    deltaPages = 0
-                )
+                delay(1000L)
+                val st = _uiState.value
+                val book = st.book ?: continue
+                if (book.isHidden) continue
+                val activelyReading = isReaderForegroundActive &&
+                    !st.isLoading &&
+                    !st.isSettingsExpanded &&
+                    !st.isSearchOpen &&
+                    !st.isNotebookOpen &&
+                    !st.sessionTimer.isSheetOpen &&
+                    !st.sessionTimer.showCompleteAlert
+                if (activelyReading) {
+                    accumulatedActiveSeconds++
+                    if (accumulatedActiveSeconds >= 60) {
+                        accumulatedActiveSeconds = 0
+                        repository.recordVisibleReadingActivity(
+                            isHiddenBook = false,
+                            deltaMinutes = 1,
+                            deltaPages = 0
+                        )
+                    }
+                }
             }
         }
     }
@@ -299,92 +403,273 @@ class ReaderViewModel(
             if (parsedBook is ParsedBook.TextBook) {
                 repaginateIfNeeded(force = true)
             } else {
+                lastVisualSignature = buildVisualSignature(settings.value, size.width, size.height)
                 invalidateAndRenderAroundCurrent()
             }
         }
     }
 
+    private fun buildLayoutSignature(s: ReaderSettings, w: Int, h: Int): String {
+        return "${w}x${h}_${topInsetPx}_${bottomInsetPx}_${s.fontStyle}_${s.fontSizeSp}_${s.lineSpacing}_${s.marginDp}"
+    }
+
+    private fun buildVisualSignature(s: ReaderSettings, w: Int, h: Int): String {
+        return "${w}x${h}_${topInsetPx}_${bottomInsetPx}_${s.themeMode}_${s.fontStyle}_" +
+            "${s.fontSizeSp}_${s.lineSpacing}_${s.marginDp}_${s.bionicModeEnabled}_" +
+            "${s.paperGrainEnabled}_${s.pdfAutoCropEnabled}"
+    }
+
     private fun repaginateIfNeeded(force: Boolean) {
         val textBook = parsedBook as? ParsedBook.TextBook ?: return
         val s = settings.value
-        val layoutSig = "${viewportSize.width}x${viewportSize.height}_${topInsetPx}_${bottomInsetPx}_" +
-            "${s.fontStyle}_${s.fontSizeSp}_${s.lineSpacing}_${s.marginDp}_${s.bionicModeEnabled}"
-        val visualChangedOnly = !force && layoutSig == lastPaginationSignature
+        val w = viewportSize.width
+        val h = viewportSize.height
+        if (w <= 0 || h <= 0) return
 
-        if (visualChangedOnly) {
-            invalidateAndRenderAroundCurrent()
+        val layoutSig = buildLayoutSignature(s, w, h)
+        val visualSig = buildVisualSignature(s, w, h)
+
+        if (!force && layoutSig == lastPaginationSignature) {
+            if (visualSig != lastVisualSignature) {
+                lastVisualSignature = visualSig
+                invalidateAndRenderAroundCurrent()
+            }
             return
         }
-        lastPaginationSignature = layoutSig
 
-        viewModelScope.launch {
+        lastPaginationSignature = layoutSig
+        lastVisualSignature = visualSig
+
+        paginationJob?.cancel()
+        paginationJob = viewModelScope.launch {
             val prevState = _uiState.value
             val prevRatio = if (prevState.totalPages <= 1) 0f else {
                 prevState.currentPage.toFloat() / (prevState.totalPages - 1).coerceAtLeast(1)
             }
-            val wasFirstLoad = paginatedPages.isEmpty()
+            val wasFirstLoad = paginatedPages.isEmpty() && !isLazyChapterMode
 
-            val result = withContext(Dispatchers.Default) {
-                Paginator.paginate(
-                    chapters = textBook.chapters,
-                    widthPx = viewportSize.width,
-                    heightPx = viewportSize.height,
-                    density = screenDensity,
-                    topInsetPx = topInsetPx,
-                    bottomInsetPx = bottomInsetPx,
-                    settings = s,
-                    includeFeaturedDedication = false
-                )
+            val totalChars = withContext(Dispatchers.Default) {
+                var sum = 0
+                for (ch in textBook.chapters) {
+                    for (p in ch.paragraphs) sum += p.length
+                }
+                sum
             }
-            paginatedPages = result.pages
-            val total = result.pages.size.coerceAtLeast(1)
-            val newPage = if (wasFirstLoad) {
-                (prevState.book?.currentPage ?: 0).coerceIn(0, total - 1)
+
+            if (totalChars > LARGE_BOOK_CHAR_THRESHOLD && textBook.chapters.size > 1) {
+                // Fast on-demand chapter pagination for huge 1000+ page books (<30ms!)
+                val estCounts = withContext(Dispatchers.Default) {
+                    Paginator.estimateChapterPageCounts(
+                        chapters = textBook.chapters,
+                        widthPx = w,
+                        heightPx = h,
+                        density = screenDensity,
+                        topInsetPx = topInsetPx,
+                        bottomInsetPx = bottomInsetPx,
+                        settings = s
+                    )
+                }
+                val starts = IntArray(estCounts.size)
+                var running = 0
+                val toc = ArrayList<ChapterTocItem>(estCounts.size)
+                for (i in estCounts.indices) {
+                    starts[i] = running
+                    toc.add(ChapterTocItem(textBook.chapters[i].title, running, i))
+                    running += estCounts[i]
+                }
+                val total = running.coerceAtLeast(1)
+                val newPage = if (wasFirstLoad) {
+                    (prevState.book?.currentPage ?: 0).coerceIn(0, total - 1)
+                } else {
+                    (prevRatio * (total - 1)).toInt().coerceIn(0, total - 1)
+                }
+
+                synchronized(lazyChapterLock) {
+                    isLazyChapterMode = true
+                    paginatedPages = emptyList()
+                    lazyChapters = textBook.chapters
+                    lazyChapterStarts = starts
+                    lazyChapterCounts = estCounts
+                    lazyChapterCache.clear()
+                }
+
+                // Paginate ONLY the active chapter containing newPage immediately
+                val activePage = withContext(Dispatchers.Default) {
+                    getOrPaginateLazyPage(newPage, w, h, s)
+                }
+                val updatedTotal = currentLazyTotalPages().coerceAtLeast(1)
+                val clampedNewPage = newPage.coerceIn(0, updatedTotal - 1)
+
+                _uiState.update { st ->
+                    st.copy(
+                        isLoading = false,
+                        currentPage = clampedNewPage,
+                        totalPages = updatedTotal,
+                        estimatedMinutesLeft = computeEstMinutesLeft(clampedNewPage, updatedTotal),
+                        currentChapterTitle = activePage?.chapterTitle ?: textBook.title,
+                        tocItems = buildLazyToc(),
+                        isCurrentPageBookmarked = st.bookmarks.any { it.pageIndex == clampedNewPage },
+                        activeSelection = null
+                    )
+                }
+                persistProgress(clampedNewPage, updatedTotal)
+                invalidateAndRenderAroundCurrent()
             } else {
-                (prevRatio * (total - 1)).toInt().coerceIn(0, total - 1)
-            }
+                // Fast chunked full pagination for standard books (<60ms)
+                val result = withContext(Dispatchers.Default) {
+                    Paginator.paginate(
+                        chapters = textBook.chapters,
+                        widthPx = w,
+                        heightPx = h,
+                        density = screenDensity,
+                        topInsetPx = topInsetPx,
+                        bottomInsetPx = bottomInsetPx,
+                        settings = s,
+                        includeFeaturedDedication = false
+                    )
+                }
+                synchronized(lazyChapterLock) {
+                    isLazyChapterMode = false
+                    lazyChapterCache.clear()
+                    paginatedPages = result.pages
+                }
+                val total = result.pages.size.coerceAtLeast(1)
+                val newPage = if (wasFirstLoad) {
+                    (prevState.book?.currentPage ?: 0).coerceIn(0, total - 1)
+                } else {
+                    (prevRatio * (total - 1)).toInt().coerceIn(0, total - 1)
+                }
 
-            _uiState.update { st ->
-                st.copy(
-                    isLoading = false,
-                    currentPage = newPage,
-                    totalPages = total,
-                    estimatedMinutesLeft = computeEstMinutesLeft(newPage, total),
-                    currentChapterTitle = result.pages.getOrNull(newPage)?.chapterTitle.orEmpty(),
-                    tocItems = result.toc,
-                    isCurrentPageBookmarked = st.bookmarks.any { it.pageIndex == newPage },
-                    activeSelection = null
-                )
-            }
+                _uiState.update { st ->
+                    st.copy(
+                        isLoading = false,
+                        currentPage = newPage,
+                        totalPages = total,
+                        estimatedMinutesLeft = computeEstMinutesLeft(newPage, total),
+                        currentChapterTitle = result.pages.getOrNull(newPage)?.chapterTitle.orEmpty(),
+                        tocItems = result.toc,
+                        isCurrentPageBookmarked = st.bookmarks.any { it.pageIndex == newPage },
+                        activeSelection = null
+                    )
+                }
 
-            persistProgress(newPage, total)
-            invalidateAndRenderAroundCurrent()
+                persistProgress(newPage, total)
+                invalidateAndRenderAroundCurrent()
+            }
+        }
+    }
+
+    private fun currentLazyTotalPages(): Int = synchronized(lazyChapterLock) {
+        if (lazyChapterStarts.isEmpty()) 1
+        else lazyChapterStarts.last() + lazyChapterCounts.last()
+    }
+
+    private fun buildLazyToc(): List<ChapterTocItem> = synchronized(lazyChapterLock) {
+        lazyChapters.mapIndexed { idx, ch ->
+            ChapterTocItem(title = ch.title, pageIndex = lazyChapterStarts[idx], chapterIndex = idx)
+        }
+    }
+
+    private fun getOrPaginateLazyPage(pageIndex: Int, w: Int, h: Int, s: ReaderSettings): PaginatedPage? {
+        if (!isLazyChapterMode) return paginatedPages.getOrNull(pageIndex)
+        val chIdx: Int
+        val chapter: BookChapter
+        val chStart: Int
+        synchronized(lazyChapterLock) {
+            if (lazyChapters.isEmpty()) return null
+            // Binary search chapter containing pageIndex
+            var lo = 0
+            var hi = lazyChapterStarts.lastIndex
+            var found = 0
+            while (lo <= hi) {
+                val mid = (lo + hi) ushr 1
+                if (lazyChapterStarts[mid] <= pageIndex) {
+                    found = mid
+                    lo = mid + 1
+                } else {
+                    hi = mid - 1
+                }
+            }
+            chIdx = found
+            val cached = lazyChapterCache[chIdx]
+            if (cached != null) {
+                val localIdx = (pageIndex - lazyChapterStarts[chIdx]).coerceIn(0, cached.lastIndex)
+                return cached[localIdx].copy(pageIndex = pageIndex)
+            }
+            chapter = lazyChapters[chIdx]
+            chStart = lazyChapterStarts[chIdx]
+        }
+
+        // Paginate ONLY this single chapter on background thread
+        val metrics = Paginator.computeMetrics(w, h, screenDensity, topInsetPx, bottomInsetPx, s)
+        val bodyPaint = Paginator.createBodyTextPaint(s, screenDensity, 0xFF000000.toInt())
+        val headingPaint = Paginator.createHeadingTextPaint(s, screenDensity, 0xFF000000.toInt())
+        val pages = Paginator.paginateSingleChapter(
+            chapter = chapter,
+            chapterIndex = chIdx,
+            startPageIndex = chStart,
+            metrics = metrics,
+            bodyPaint = bodyPaint,
+            headingPaint = headingPaint,
+            density = screenDensity,
+            settings = s
+        )
+
+        synchronized(lazyChapterLock) {
+            lazyChapterCache[chIdx] = pages
+            val oldCount = lazyChapterCounts[chIdx]
+            val newCount = pages.size.coerceAtLeast(1)
+            val diff = newCount - oldCount
+            if (diff != 0) {
+                lazyChapterCounts[chIdx] = newCount
+                for (i in (chIdx + 1) until lazyChapterStarts.size) {
+                    lazyChapterStarts[i] = (lazyChapterStarts[i] + diff).coerceAtLeast(0)
+                }
+            }
+            // Keep at most 14 chapters cached in memory to stay ultra-lightweight
+            if (lazyChapterCache.size > 14) {
+                val farthestKey = lazyChapterCache.keys.maxByOrNull { abs(it - chIdx) }
+                if (farthestKey != null && farthestKey != chIdx) {
+                    lazyChapterCache.remove(farthestKey)
+                }
+            }
+            val localIdx = (pageIndex - lazyChapterStarts[chIdx]).coerceIn(0, pages.lastIndex)
+            return pages[localIdx].copy(pageIndex = pageIndex)
         }
     }
 
     private fun computeEstMinutesLeft(pageIndex: Int, totalPages: Int): Int {
         val remainingPages = (totalPages - 1 - pageIndex).coerceAtLeast(0)
         if (remainingPages == 0) return 0
-        val pb = parsedBook
-        return if (pb is ParsedBook.TextBook && paginatedPages.isNotEmpty()) {
-            var remainingWords = 0
-            for (i in (pageIndex + 1) until paginatedPages.size) {
-                val txt = paginatedPages[i].bodyText
-                if (txt.isNotEmpty()) {
-                    remainingWords += txt.split(Regex("\\s+")).size
-                }
+        return ceil(remainingPages * 1.15).toInt().coerceAtLeast(1)
+    }
+
+    private fun pageCacheKey(
+        pageIndex: Int,
+        visualSig: String,
+        highlights: List<HighlightEntity>
+    ): String {
+        var hlHash = 0
+        for (hl in highlights) {
+            if (hl.pageIndex == pageIndex) {
+                hlHash = 31 * hlHash + hl.id.toInt()
+                hlHash = 31 * hlHash + hl.colorIndex
+                hlHash = 31 * hlHash + hl.note.hashCode()
             }
-            ceil(remainingWords / 210.0).toInt().coerceAtLeast(1)
-        } else {
-            ceil(remainingPages * 1.2).toInt().coerceAtLeast(1)
         }
+        return "${pageIndex}_${visualSig}_$hlHash"
     }
 
     private fun invalidateAndRenderAroundCurrent() {
-        pageCache.clear()
+        pageCache.evictAll()
         renderWindow(_uiState.value.currentPage)
     }
 
+    /**
+     * Fast 2-phase on-demand rendering:
+     * Phase 1: Immediately render/display `centerPage` so settings, theme, and scrubber changes appear instantaneously.
+     * Phase 2: Pre-render `centerPage + 1` and `centerPage - 1` asynchronously in background so page curls stay 60fps.
+     */
     private fun renderWindow(centerPage: Int) {
         val pb = parsedBook ?: return
         val w = viewportSize.width
@@ -392,17 +677,34 @@ class ReaderViewModel(
         if (w <= 0 || h <= 0) return
 
         val s = settings.value
+        val visualSig = buildVisualSignature(s, w, h)
         val highlights = _uiState.value.highlights
-        val total = _uiState.value.totalPages
 
         renderJob?.cancel()
         renderJob = viewModelScope.launch {
-            val currBmp = getOrRenderPage(pb, centerPage, total, w, h, s, highlights)
-            val prevBmp = if (centerPage > 0) getOrRenderPage(pb, centerPage - 1, total, w, h, s, highlights) else null
-            val nextBmp = if (centerPage < total - 1) getOrRenderPage(pb, centerPage + 1, total, w, h, s, highlights) else null
+            val total = if (pb is ParsedBook.TextBook && isLazyChapterMode) {
+                currentLazyTotalPages().coerceAtLeast(1)
+            } else {
+                _uiState.value.totalPages.coerceAtLeast(1)
+            }
+            val safeCenter = centerPage.coerceIn(0, total - 1)
+
+            // Phase 1: Render and emit current page immediately
+            val currBmp = getOrRenderPage(pb, safeCenter, total, w, h, s, visualSig, highlights)
+            val resolvedTotal = if (pb is ParsedBook.TextBook && isLazyChapterMode) {
+                currentLazyTotalPages().coerceAtLeast(1)
+            } else total
+
+            val activeChapterTitle = if (pb is ParsedBook.TextBook) {
+                withContext(Dispatchers.Default) {
+                    getOrPaginateLazyPage(safeCenter, w, h, s)?.chapterTitle ?: pb.title
+                }
+            } else {
+                "Page ${safeCenter + 1}"
+            }
 
             currentGeometry = if (pb is ParsedBook.TextBook) {
-                val page = paginatedPages.getOrNull(centerPage)
+                val page = withContext(Dispatchers.Default) { getOrPaginateLazyPage(safeCenter, w, h, s) }
                 if (page != null) {
                     withContext(Dispatchers.Default) {
                         Paginator.buildPageGeometry(
@@ -418,16 +720,46 @@ class ReaderViewModel(
                 } else null
             } else null
 
+            // Check if neighbors are already warm in LRU cache
+            val warmPrev = if (safeCenter > 0) pageCache.get(pageCacheKey(safeCenter - 1, visualSig, highlights)) else null
+            val warmNext = if (safeCenter < resolvedTotal - 1) pageCache.get(pageCacheKey(safeCenter + 1, visualSig, highlights)) else null
+
             _uiState.update { st ->
                 st.copy(
+                    isLoading = false,
+                    totalPages = resolvedTotal,
+                    currentChapterTitle = activeChapterTitle,
+                    tocItems = if (pb is ParsedBook.TextBook && isLazyChapterMode) buildLazyToc() else st.tocItems,
                     currentBitmap = currBmp,
-                    prevBitmap = prevBmp,
-                    nextBitmap = nextBmp
+                    prevBitmap = warmPrev,
+                    nextBitmap = warmNext
                 )
             }
 
-            val keysToDrop = pageCache.keys.filter { abs(it - centerPage) > 2 }
-            keysToDrop.forEach { k -> pageCache.remove(k) }
+            // Phase 2: Pre-render adjacent pages (+1 first, then -1) in background
+            val nextDeferred = if (safeCenter < resolvedTotal - 1 && warmNext == null) {
+                async(Dispatchers.Default) {
+                    getOrRenderPage(pb, safeCenter + 1, resolvedTotal, w, h, s, visualSig, highlights)
+                }
+            } else null
+
+            val prevDeferred = if (safeCenter > 0 && warmPrev == null) {
+                async(Dispatchers.Default) {
+                    getOrRenderPage(pb, safeCenter - 1, resolvedTotal, w, h, s, visualSig, highlights)
+                }
+            } else null
+
+            val nextBmp = warmNext ?: nextDeferred?.await()
+            val prevBmp = warmPrev ?: prevDeferred?.await()
+
+            if (isActive && _uiState.value.currentPage == safeCenter) {
+                _uiState.update { st ->
+                    st.copy(
+                        prevBitmap = prevBmp,
+                        nextBitmap = nextBmp
+                    )
+                }
+            }
         }
     }
 
@@ -438,18 +770,22 @@ class ReaderViewModel(
         w: Int,
         h: Int,
         s: ReaderSettings,
+        visualSig: String,
         allHighlights: List<HighlightEntity>
     ): Bitmap? {
-        pageCache[pageIndex]?.let { return it }
+        val key = pageCacheKey(pageIndex, visualSig, allHighlights)
+        pageCache.get(key)?.let { return it }
+
         val pageHighlights = allHighlights.filter { it.pageIndex == pageIndex }
         val estLeft = computeEstMinutesLeft(pageIndex, totalPages)
         val bmp = withContext(Dispatchers.Default) {
             when (pb) {
                 is ParsedBook.TextBook -> {
-                    val page = paginatedPages.getOrNull(pageIndex) ?: return@withContext null
+                    val page = getOrPaginateLazyPage(pageIndex, w, h, s) ?: return@withContext null
+                    val actualTotal = if (isLazyChapterMode) currentLazyTotalPages().coerceAtLeast(1) else totalPages
                     bitmapRenderer.renderTextPage(
                         page = page,
-                        totalPages = totalPages,
+                        totalPages = actualTotal,
                         estimatedMinutesLeft = estLeft,
                         widthPx = w,
                         heightPx = h,
@@ -479,19 +815,34 @@ class ReaderViewModel(
             }
         }
         if (bmp != null) {
-            pageCache[pageIndex] = bmp
+            pageCache.put(key, bmp)
         }
         return bmp
     }
 
-    // --- Page Turning & Navigation ---
+    // --- Page Turning & Navigation (strictly locked to +/- 1 page with debounce) ---
     fun commitPageTurn(delta: Int) {
+        val step = delta.coerceIn(-1, 1)
+        if (step == 0) return
+
+        val now = SystemClock.uptimeMillis()
+        if (now - lastPageTurnUptimeMs < 170L) return
+        lastPageTurnUptimeMs = now
+
         val st = _uiState.value
-        val target = (st.currentPage + delta).coerceIn(0, (st.totalPages - 1).coerceAtLeast(0))
+        val target = (st.currentPage + step).coerceIn(0, (st.totalPages - 1).coerceAtLeast(0))
         if (target == st.currentPage) return
+
+        val s = settings.value
+        val visualSig = buildVisualSignature(s, viewportSize.width, viewportSize.height)
+        val cachedTarget = pageCache.get(pageCacheKey(target, visualSig, st.highlights))
+        val cachedPrev = if (target > 0) pageCache.get(pageCacheKey(target - 1, visualSig, st.highlights)) else null
+        val cachedNext = if (target < st.totalPages - 1) pageCache.get(pageCacheKey(target + 1, visualSig, st.highlights)) else null
 
         val chapterTitle = getChapterTitleForPage(target)
         val keepZoom = st.isPdfZoomLocked
+        fullPageTranslateJob?.cancel()
+
         _uiState.update { state ->
             state.copy(
                 currentPage = target,
@@ -500,13 +851,14 @@ class ReaderViewModel(
                 isCurrentPageBookmarked = state.bookmarks.any { it.pageIndex == target },
                 activeSelection = null,
                 activeTranslation = null,
+                fullPageTranslation = null,
                 searchGlowRects = emptyList(),
                 searchGlowAlpha = 0f,
                 pdfZoomScale = if (keepZoom) state.pdfZoomScale else 1f,
                 pdfPanOffset = if (keepZoom) state.pdfPanOffset else Offset.Zero,
-                currentBitmap = pageCache[target] ?: state.currentBitmap,
-                prevBitmap = pageCache[target - 1],
-                nextBitmap = pageCache[target + 1]
+                currentBitmap = cachedTarget ?: state.currentBitmap,
+                prevBitmap = cachedPrev,
+                nextBitmap = cachedNext
             )
         }
         persistProgress(target, st.totalPages)
@@ -536,7 +888,12 @@ class ReaderViewModel(
             showReturnToPagePill(previousPage)
         }
 
+        val s = settings.value
+        val visualSig = buildVisualSignature(s, viewportSize.width, viewportSize.height)
+        val cachedTarget = pageCache.get(pageCacheKey(clamped, visualSig, st.highlights))
         val chapterTitle = getChapterTitleForPage(clamped)
+        fullPageTranslateJob?.cancel()
+
         _uiState.update { state ->
             state.copy(
                 currentPage = clamped,
@@ -545,8 +902,10 @@ class ReaderViewModel(
                 isCurrentPageBookmarked = state.bookmarks.any { it.pageIndex == clamped },
                 activeSelection = null,
                 activeTranslation = null,
+                fullPageTranslation = null,
                 isSearchOpen = false,
-                isNotebookOpen = false
+                isNotebookOpen = false,
+                currentBitmap = cachedTarget ?: state.currentBitmap
             )
         }
         persistProgress(clamped, st.totalPages)
@@ -591,6 +950,8 @@ class ReaderViewModel(
     fun openPinnedPagePeek() {
         val pinned = _uiState.value.pinnedPageIndex ?: return
         val pb = parsedBook ?: return
+        val s = settings.value
+        val visualSig = buildVisualSignature(s, viewportSize.width, viewportSize.height)
         viewModelScope.launch {
             val bmp = getOrRenderPage(
                 pb = pb,
@@ -598,7 +959,8 @@ class ReaderViewModel(
                 totalPages = _uiState.value.totalPages,
                 w = viewportSize.width,
                 h = viewportSize.height,
-                s = settings.value,
+                s = s,
+                visualSig = visualSig,
                 allHighlights = _uiState.value.highlights
             )
             _uiState.update { it.copy(isPeekingPinnedPage = true, pinnedPageBitmap = bmp, isOverlayVisible = false) }
@@ -609,10 +971,26 @@ class ReaderViewModel(
         _uiState.update { it.copy(isPeekingPinnedPage = false) }
     }
 
-    // --- Left-Edge Brightness Gesture ---
+    // --- Brightness Control (Slider + Use System Toggle + Left-Edge Gesture) ---
+    fun setUseSystemBrightness(useSystem: Boolean) {
+        preferencesRepository.updateSettings { it.copy(useSystemBrightness = useSystem) }
+    }
+
+    fun setCustomBrightness(level: Float) {
+        preferencesRepository.updateSettings {
+            it.copy(
+                useSystemBrightness = false,
+                brightnessLevel = level.coerceIn(0.05f, 1.0f)
+            )
+        }
+    }
+
     fun onLeftEdgeBrightnessDrag(deltaFraction: Float) {
         preferencesRepository.updateSettings { s ->
-            s.copy(brightnessLevel = (s.brightnessLevel + deltaFraction).coerceIn(0.15f, 1.0f))
+            s.copy(
+                useSystemBrightness = false,
+                brightnessLevel = (s.brightnessLevel + deltaFraction).coerceIn(0.05f, 1.0f)
+            )
         }
         _uiState.update { it.copy(showBrightnessIndicator = true) }
         brightnessHideJob?.cancel()
@@ -651,6 +1029,34 @@ class ReaderViewModel(
         _uiState.update { it.copy(pdfZoomScale = 1f, pdfPanOffset = Offset.Zero, isPdfZoomLocked = false) }
     }
 
+    // --- Lazy PDF Text Extraction Helper ---
+    private suspend fun ensurePdfTextsLoaded(pb: ParsedBook.PdfBook): List<String> {
+        lazyPdfTexts?.let { return it }
+        val extracted = withContext(Dispatchers.IO) {
+            BookDocumentParser.extractPdfTextsOnDemand(pb.filePath, pb.pageCount)
+        }
+        lazyPdfTexts = extracted
+        return extracted
+    }
+
+    private suspend fun getCurrentPagePlainText(pageIdx: Int): String {
+        return when (val pb = parsedBook) {
+            is ParsedBook.TextBook -> {
+                val p = withContext(Dispatchers.Default) {
+                    getOrPaginateLazyPage(pageIdx, viewportSize.width, viewportSize.height, settings.value)
+                }
+                listOfNotNull(p?.headingText, p?.bodyText)
+                    .filter { it.isNotBlank() }
+                    .joinToString("\n\n")
+            }
+            is ParsedBook.PdfBook -> {
+                val texts = ensurePdfTextsLoaded(pb)
+                texts.getOrNull(pageIdx).orEmpty()
+            }
+            null -> ""
+        }
+    }
+
     // --- Offline Read-Aloud (TTS) ---
     fun toggleTts() {
         if (_uiState.value.isTtsPlaying) {
@@ -676,31 +1082,148 @@ class ReaderViewModel(
 
     private fun speakCurrentPage() {
         val pageIdx = _uiState.value.currentPage
-        val text = when (val pb = parsedBook) {
-            is ParsedBook.TextBook -> {
-                val p = paginatedPages.getOrNull(pageIdx)
-                listOfNotNull(p?.headingText, p?.bodyText).joinToString(". ")
+        viewModelScope.launch {
+            val text = getCurrentPagePlainText(pageIdx)
+            if (text.isBlank()) {
+                stopTts()
+                showToast("No readable text on this page")
+                return@launch
             }
-            is ParsedBook.PdfBook -> pb.pageTexts.getOrNull(pageIdx).orEmpty()
-            null -> ""
+            ttsEngine.speak(text, settings.value.ttsSpeed)
         }
-        if (text.isBlank()) {
-            stopTts()
-            showToast("No readable text on this page")
-            return
-        }
-        ttsEngine.speak(text, settings.value.ttsSpeed)
     }
 
     private fun onTtsPageFinished() {
         val st = _uiState.value
         if (!st.isTtsPlaying) return
         if (st.currentPage < st.totalPages - 1) {
-            // Trigger smooth curved flip to next page and continue reading
             _uiState.update { it.copy(autoFlipTrigger = it.autoFlipTrigger + 1) }
         } else {
             stopTts()
             showToast("Finished reading volume")
+        }
+    }
+
+    // --- Reading Session Timer (Live Pill + Completion Chime & Alert) ---
+    fun openSessionTimerSheet(open: Boolean) {
+        _uiState.update {
+            it.copy(
+                sessionTimer = it.sessionTimer.copy(isSheetOpen = open),
+                isOverlayVisible = if (open) false else it.isOverlayVisible,
+                isSettingsExpanded = false
+            )
+        }
+    }
+
+    fun startSessionTimer(minutes: Int) {
+        val clampedMin = minutes.coerceIn(1, 240)
+        val totalSec = clampedMin * 60
+        sessionTimerJob?.cancel()
+        _uiState.update {
+            it.copy(
+                sessionTimer = ReadingSessionTimerState(
+                    configuredMinutes = clampedMin,
+                    totalSeconds = totalSec,
+                    remainingSeconds = totalSec,
+                    isRunning = true,
+                    isPaused = false,
+                    isSheetOpen = false,
+                    showCompleteAlert = false
+                )
+            )
+        }
+        launchSessionTimerTicker()
+        showToast("Reading timer started: ${clampedMin}m")
+    }
+
+    fun togglePauseSessionTimer() {
+        val timer = _uiState.value.sessionTimer
+        if (timer.remainingSeconds <= 0) return
+        if (timer.isRunning) {
+            sessionTimerJob?.cancel()
+            _uiState.update {
+                it.copy(sessionTimer = it.sessionTimer.copy(isRunning = false, isPaused = true))
+            }
+        } else {
+            _uiState.update {
+                it.copy(sessionTimer = it.sessionTimer.copy(isRunning = true, isPaused = false))
+            }
+            launchSessionTimerTicker()
+        }
+    }
+
+    fun resetSessionTimer() {
+        sessionTimerJob?.cancel()
+        _uiState.update {
+            it.copy(
+                sessionTimer = it.sessionTimer.copy(
+                    totalSeconds = 0,
+                    remainingSeconds = 0,
+                    isRunning = false,
+                    isPaused = false,
+                    showCompleteAlert = false
+                )
+            )
+        }
+    }
+
+    fun addTenMinutesToSessionTimer() {
+        val current = _uiState.value.sessionTimer
+        val addedSec = 10 * 60
+        val nextRem = current.remainingSeconds + addedSec
+        val nextTotal = maxOf(current.totalSeconds, nextRem)
+        sessionTimerJob?.cancel()
+        _uiState.update {
+            it.copy(
+                sessionTimer = current.copy(
+                    configuredMinutes = nextTotal / 60,
+                    totalSeconds = nextTotal,
+                    remainingSeconds = nextRem,
+                    isRunning = true,
+                    isPaused = false,
+                    showCompleteAlert = false,
+                    isSheetOpen = false
+                )
+            )
+        }
+        launchSessionTimerTicker()
+        showToast("+10 min added to timer")
+    }
+
+    fun dismissSessionTimerAlert() {
+        _uiState.update {
+            it.copy(sessionTimer = it.sessionTimer.copy(showCompleteAlert = false))
+        }
+    }
+
+    private fun launchSessionTimerTicker() {
+        sessionTimerJob?.cancel()
+        sessionTimerJob = viewModelScope.launch {
+            while (isActive) {
+                delay(1000L)
+                val timer = _uiState.value.sessionTimer
+                if (!timer.isRunning) break
+                val next = (timer.remainingSeconds - 1).coerceAtLeast(0)
+                if (next <= 0) {
+                    _uiState.update {
+                        it.copy(
+                            sessionTimer = it.sessionTimer.copy(
+                                remainingSeconds = 0,
+                                isRunning = false,
+                                isPaused = false,
+                                showCompleteAlert = true
+                            )
+                        )
+                    }
+                    audioEngine.playGentleCompletionChime()
+                    audioEngine.triggerTimerCompleteHaptic()
+                    break
+                } else {
+                    _uiState.update {
+                        it.copy(sessionTimer = it.sessionTimer.copy(remainingSeconds = next))
+                    }
+                }
+            }
         }
     }
 
@@ -754,7 +1277,8 @@ class ReaderViewModel(
                 delay(intervalSeconds * 1000L)
                 val st = _uiState.value
                 if (!st.isAutoFlipPaused && !st.isOverlayVisible && !st.isSearchOpen &&
-                    !st.isNotebookOpen && st.activeSelection == null && st.currentPage < st.totalPages - 1
+                    !st.isNotebookOpen && st.activeSelection == null && st.fullPageTranslation == null &&
+                    st.currentPage < st.totalPages - 1
                 ) {
                     _uiState.update { it.copy(autoFlipTrigger = it.autoFlipTrigger + 1) }
                 }
@@ -762,7 +1286,7 @@ class ReaderViewModel(
         }
     }
 
-    // --- Multi-Language Translation & Offline Word Bank ---
+    // --- Multi-Language Selection Translation & 1-Tap Full-Page Translation ---
     fun translateActiveSelection() {
         val sel = _uiState.value.activeSelection ?: return
         val source = sel.selectedText
@@ -815,6 +1339,55 @@ class ReaderViewModel(
         }
     }
 
+    fun translateCurrentPage(overrideLanguage: TranslationLanguage? = null) {
+        val pageIdx = _uiState.value.currentPage
+        val targetLang = overrideLanguage ?: settings.value.defaultTargetLanguage
+        fullPageTranslateJob?.cancel()
+        _uiState.update {
+            it.copy(
+                isOverlayVisible = false,
+                isSettingsExpanded = false,
+                activeSelection = null,
+                activeTranslation = null,
+                fullPageTranslation = FullPageTranslationState(
+                    pageIndex = pageIdx,
+                    targetLanguage = targetLang,
+                    isLoading = true
+                )
+            )
+        }
+        fullPageTranslateJob = viewModelScope.launch {
+            val pageText = getCurrentPagePlainText(pageIdx)
+            val result = translationService.translateFullPage(
+                pageText = pageText,
+                targetLanguage = targetLang,
+                optionalGeminiApiKey = settings.value.geminiApiKey
+            )
+            _uiState.update { st ->
+                if (st.currentPage != pageIdx) st
+                else st.copy(
+                    fullPageTranslation = FullPageTranslationState(
+                        pageIndex = pageIdx,
+                        targetLanguage = result.targetLanguage,
+                        isLoading = false,
+                        translatedText = result.translatedText,
+                        fromCache = result.fromCache,
+                        errorHint = result.errorHint
+                    )
+                )
+            }
+        }
+    }
+
+    fun switchFullPageTranslationLanguage(language: TranslationLanguage) {
+        translateCurrentPage(overrideLanguage = language)
+    }
+
+    fun dismissFullPageTranslation() {
+        fullPageTranslateJob?.cancel()
+        _uiState.update { it.copy(fullPageTranslation = null) }
+    }
+
     fun toggleSaveActiveTranslation() {
         val card = _uiState.value.activeTranslation ?: return
         val entry = card.entry ?: return
@@ -860,7 +1433,9 @@ class ReaderViewModel(
         glowJob = viewModelScope.launch {
             delay(90L)
             val rects = if (parsedBook is ParsedBook.TextBook) {
-                val page = paginatedPages.getOrNull(pageIndex)
+                val page = withContext(Dispatchers.Default) {
+                    getOrPaginateLazyPage(pageIndex, viewportSize.width, viewportSize.height, settings.value)
+                }
                 if (page != null && viewportSize.width > 0) {
                     val geom = Paginator.buildPageGeometry(
                         page = page,
@@ -903,7 +1478,19 @@ class ReaderViewModel(
 
     fun getChapterTitleForPage(pageIndex: Int): String {
         return when (val pb = parsedBook) {
-            is ParsedBook.TextBook -> paginatedPages.getOrNull(pageIndex)?.chapterTitle ?: pb.title
+            is ParsedBook.TextBook -> {
+                if (isLazyChapterMode) {
+                    synchronized(lazyChapterLock) {
+                        var found = 0
+                        for (i in lazyChapterStarts.indices) {
+                            if (lazyChapterStarts[i] <= pageIndex) found = i else break
+                        }
+                        lazyChapters.getOrNull(found)?.title ?: pb.title
+                    }
+                } else {
+                    paginatedPages.getOrNull(pageIndex)?.chapterTitle ?: pb.title
+                }
+            }
             is ParsedBook.PdfBook -> "Page ${pageIndex + 1}"
             null -> ""
         }
@@ -979,12 +1566,8 @@ class ReaderViewModel(
         val st = _uiState.value
         val pageIdx = st.currentPage
         val chapter = getChapterTitleForPage(pageIdx)
-        val excerpt = when (val pb = parsedBook) {
-            is ParsedBook.TextBook -> paginatedPages.getOrNull(pageIdx)?.bodyText?.take(110).orEmpty()
-            is ParsedBook.PdfBook -> pb.pageTexts.getOrNull(pageIdx)?.take(110).orEmpty()
-            null -> ""
-        }
         viewModelScope.launch {
+            val excerpt = getCurrentPagePlainText(pageIdx).take(110)
             val added = repository.toggleBookmark(bookId, pageIdx, chapter, excerpt)
             showToast(if (added) "Bookmarked Page ${pageIdx + 1}" else "Bookmark removed")
         }
@@ -1000,12 +1583,15 @@ class ReaderViewModel(
         val pb = parsedBook ?: return
 
         if (pb is ParsedBook.PdfBook) {
-            val pageText = pb.pageTexts.getOrNull(st.currentPage).orEmpty().trim()
-            _uiState.update {
-                it.copy(
-                    isOverlayVisible = false,
-                    pdfSelectionPromptText = pageText.ifEmpty { "Page ${st.currentPage + 1} (${pb.title})" }
-                )
+            viewModelScope.launch {
+                val texts = ensurePdfTextsLoaded(pb)
+                val pageText = texts.getOrNull(st.currentPage).orEmpty().trim()
+                _uiState.update {
+                    it.copy(
+                        isOverlayVisible = false,
+                        pdfSelectionPromptText = pageText.ifEmpty { "Page ${st.currentPage + 1} (${pb.title})" }
+                    )
+                }
             }
             return
         }
@@ -1082,11 +1668,6 @@ class ReaderViewModel(
         }
     }
 
-    /**
-     * Handles resting taps:
-     * 1. Dismisses active selection / translation card
-     * 2. Detects taps on existing highlights
-     */
     fun onTapAtRestingPage(offset: Offset): Boolean {
         val st = _uiState.value
         if (st.activeTranslation != null) {
@@ -1099,7 +1680,6 @@ class ReaderViewModel(
         }
         val geom = currentGeometry ?: return false
 
-        // Tap existing highlight
         val pageHighlights = st.highlights.filter { it.pageIndex == st.currentPage }
         for (hl in pageHighlights) {
             val rects = geom.getSelectionRects(hl.startOffset, hl.endOffset)
@@ -1220,7 +1800,7 @@ class ReaderViewModel(
         )
     }
 
-    // --- In-Book Search ---
+    // --- In-Book Search (supports normal books, lazy huge books, and lazy PDF text extraction) ---
     fun updateSearchQuery(query: String) {
         _uiState.update { it.copy(searchQuery = query) }
         searchJob?.cancel()
@@ -1230,39 +1810,73 @@ class ReaderViewModel(
             return
         }
         searchJob = viewModelScope.launch {
-            delay(140L)
+            delay(160L)
             val pb = parsedBook ?: return@launch
             val results = withContext(Dispatchers.Default) {
                 val out = mutableListOf<SearchResult>()
-                val pageTexts: List<Pair<String, String>> = when (pb) {
-                    is ParsedBook.TextBook -> paginatedPages.map { it.chapterTitle to it.bodyText }
-                    is ParsedBook.PdfBook -> pb.pageTexts.mapIndexed { i, txt -> "Page ${i + 1}" to txt }
-                }
-
-                pageTexts.forEachIndexed { pageIdx, (chapterTitle, text) ->
-                    if (out.size >= 80) return@forEachIndexed
-                    var start = 0
-                    while (start < text.length && out.size < 80) {
-                        val idx = text.indexOf(trimmed, start, ignoreCase = true)
-                        if (idx < 0) break
-                        val end = idx + trimmed.length
-                        val snipStart = (idx - 38).coerceAtLeast(0)
-                        val snipEnd = (end + 52).coerceAtMost(text.length)
-                        val before = (if (snipStart > 0) "…" else "") + text.substring(snipStart, idx).replace('\n', ' ')
-                        val matched = text.substring(idx, end)
-                        val after = text.substring(end, snipEnd).replace('\n', ' ') + (if (snipEnd < text.length) "…" else "")
-                        out.add(
-                            SearchResult(
-                                pageIndex = pageIdx,
-                                chapterTitle = chapterTitle,
-                                snippetBefore = before,
-                                matchText = matched,
-                                snippetAfter = after,
-                                startOffsetInPage = idx,
-                                endOffsetInPage = end
-                            )
-                        )
-                        start = end
+                when (pb) {
+                    is ParsedBook.TextBook -> {
+                        if (isLazyChapterMode) {
+                            // Fast chapter-level search without forcing upfront pagination of 1000+ pages
+                            lazyChapters.forEachIndexed { chIdx, chapter ->
+                                if (out.size >= 80) return@forEachIndexed
+                                val full = chapter.paragraphs.joinToString("\n\n")
+                                val chStart = synchronized(lazyChapterLock) { lazyChapterStarts.getOrElse(chIdx) { 0 } }
+                                val chCount = synchronized(lazyChapterLock) { lazyChapterCounts.getOrElse(chIdx) { 1 } }
+                                var start = 0
+                                while (start < full.length && out.size < 80) {
+                                    val idx = full.indexOf(trimmed, start, ignoreCase = true)
+                                    if (idx < 0) break
+                                    val end = idx + trimmed.length
+                                    val frac = if (full.isEmpty()) 0f else idx.toFloat() / full.length
+                                    val approxPage = chStart + (frac * (chCount - 1)).toInt().coerceIn(0, (chCount - 1).coerceAtLeast(0))
+                                    val snipStart = (idx - 36).coerceAtLeast(0)
+                                    val snipEnd = (end + 50).coerceAtMost(full.length)
+                                    val before = (if (snipStart > 0) "…" else "") + full.substring(snipStart, idx).replace('\n', ' ')
+                                    val matched = full.substring(idx, end)
+                                    val after = full.substring(end, snipEnd).replace('\n', ' ') + (if (snipEnd < full.length) "…" else "")
+                                    out.add(SearchResult(approxPage, chapter.title, before, matched, after, 0, 0))
+                                    start = end
+                                }
+                            }
+                        } else {
+                            paginatedPages.forEachIndexed { pageIdx, page ->
+                                if (out.size >= 80) return@forEachIndexed
+                                val text = page.bodyText
+                                var start = 0
+                                while (start < text.length && out.size < 80) {
+                                    val idx = text.indexOf(trimmed, start, ignoreCase = true)
+                                    if (idx < 0) break
+                                    val end = idx + trimmed.length
+                                    val snipStart = (idx - 38).coerceAtLeast(0)
+                                    val snipEnd = (end + 52).coerceAtMost(text.length)
+                                    val before = (if (snipStart > 0) "…" else "") + text.substring(snipStart, idx).replace('\n', ' ')
+                                    val matched = text.substring(idx, end)
+                                    val after = text.substring(end, snipEnd).replace('\n', ' ') + (if (snipEnd < text.length) "…" else "")
+                                    out.add(SearchResult(pageIdx, page.chapterTitle, before, matched, after, idx, end))
+                                    start = end
+                                }
+                            }
+                        }
+                    }
+                    is ParsedBook.PdfBook -> {
+                        val texts = ensurePdfTextsLoaded(pb)
+                        texts.forEachIndexed { pageIdx, text ->
+                            if (out.size >= 80) return@forEachIndexed
+                            var start = 0
+                            while (start < text.length && out.size < 80) {
+                                val idx = text.indexOf(trimmed, start, ignoreCase = true)
+                                if (idx < 0) break
+                                val end = idx + trimmed.length
+                                val snipStart = (idx - 38).coerceAtLeast(0)
+                                val snipEnd = (end + 52).coerceAtMost(text.length)
+                                val before = (if (snipStart > 0) "…" else "") + text.substring(snipStart, idx).replace('\n', ' ')
+                                val matched = text.substring(idx, end)
+                                val after = text.substring(end, snipEnd).replace('\n', ' ') + (if (snipEnd < text.length) "…" else "")
+                                out.add(SearchResult(pageIdx, "Page ${pageIdx + 1}", before, matched, after, idx, end))
+                                start = end
+                            }
+                        }
                     }
                 }
                 out
@@ -1282,13 +1896,22 @@ class ReaderViewModel(
 
     override fun onCleared() {
         super.onCleared()
+        isReaderForegroundActive = false
+        paginationJob?.cancel()
+        renderJob?.cancel()
         readingMinutesJob?.cancel()
         autoFlipJob?.cancel()
         sleepTimerJob?.cancel()
+        sessionTimerJob?.cancel()
+        fullPageTranslateJob?.cancel()
         ttsEngine.shutdown()
         audioEngine.stopAmbient()
-        pageCache.clear()
+        pageCache.evictAll()
         bitmapRenderer.release()
+    }
+
+    companion object {
+        private const val LARGE_BOOK_CHAR_THRESHOLD = 180_000
     }
 
     class Factory(

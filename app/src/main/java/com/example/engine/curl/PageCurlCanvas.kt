@@ -17,6 +17,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -118,6 +119,7 @@ fun PageCurlCanvas(
     var animDurationMs by remember { mutableFloatStateOf(360f) }
     var isTapPeelArc by remember { mutableStateOf(false) }
     var frameTick by remember { mutableIntStateOf(0) }
+    var lastCommitUptimeMs by remember { mutableLongStateOf(0L) }
 
     // Keep latest callbacks inside pointerInput without restarting gesture detector
     val latestCurrentPage by rememberUpdatedState(currentPage)
@@ -150,13 +152,16 @@ fun PageCurlCanvas(
     // 60fps frame-synced animation driver for completing curls & tactile spring-back
     LaunchedEffect(animPhase) {
         if (animPhase != AnimPhase.COMPLETING && animPhase != AnimPhase.SPRINGING_BACK) return@LaunchedEffect
-        val w = canvasSize.width.toFloat().coerceAtLeast(1f)
+        val activePhase = animPhase
+        val activeDirection = direction
         val h = canvasSize.height.toFloat().coerceAtLeast(1f)
         var lastNanos = 0L
+        var finished = false
         animProgress = 0f
 
-        while (isActive && (animPhase == AnimPhase.COMPLETING || animPhase == AnimPhase.SPRINGING_BACK)) {
+        while (isActive && !finished && animPhase == activePhase) {
             withFrameNanos { frameNanos ->
+                if (finished) return@withFrameNanos
                 if (lastNanos == 0L) {
                     lastNanos = frameNanos
                     return@withFrameNanos
@@ -166,7 +171,7 @@ fun PageCurlCanvas(
                 animProgress = (animProgress + dtMs / animDurationMs).coerceIn(0f, 1f)
 
                 val t = animProgress
-                val eased = if (animPhase == AnimPhase.SPRINGING_BACK) {
+                val eased = if (activePhase == AnimPhase.SPRINGING_BACK) {
                     // Tactile damped spring-back curve scaled by stiffness
                     val damping = 6.2f + latestStiffness * 3.0f
                     val freq = 9.0f + latestStiffness * 4.0f
@@ -191,10 +196,15 @@ fun PageCurlCanvas(
                 frameTick++
 
                 if (animProgress >= 1f) {
-                    if (animPhase == AnimPhase.COMPLETING) {
-                        val delta = if (direction == CurlDirection.FORWARD) 1 else -1
-                        latestOnCommit(delta)
-                        latestOnHaptic()
+                    finished = true
+                    if (activePhase == AnimPhase.COMPLETING && activeDirection != CurlDirection.NONE) {
+                        val nowMs = android.os.SystemClock.uptimeMillis()
+                        if (nowMs - lastCommitUptimeMs >= 180L) {
+                            lastCommitUptimeMs = nowMs
+                            val delta = if (activeDirection == CurlDirection.FORWARD) 1 else -1
+                            latestOnCommit(delta)
+                            latestOnHaptic()
+                        }
                     }
                     animPhase = AnimPhase.IDLE
                     direction = CurlDirection.NONE
@@ -205,6 +215,10 @@ fun PageCurlCanvas(
     }
 
     fun startTapFlip(forward: Boolean) {
+        if (animPhase != AnimPhase.IDLE) return
+        val nowMs = android.os.SystemClock.uptimeMillis()
+        if (nowMs - lastCommitUptimeMs < 180L) return
+
         val w = canvasSize.width.toFloat()
         val h = canvasSize.height.toFloat()
         if (w <= 1f || h <= 1f) return
@@ -214,7 +228,7 @@ fun PageCurlCanvas(
         direction = if (forward) CurlDirection.FORWARD else CurlDirection.BACKWARD
         originMode = CurlOriginMode.BOTTOM_CORNER
         isTapPeelArc = true
-        animDurationMs = (420f - latestStiffness * 90f).coerceIn(290f, 440f)
+        animDurationMs = (400f - latestStiffness * 85f).coerceIn(280f, 420f)
 
         if (forward) {
             animStartX = w * 0.96f
@@ -257,8 +271,10 @@ fun PageCurlCanvas(
                     val h = size.height.toFloat().coerceAtLeast(1f)
                     val startPos = down.position
 
-                    // Ignore new drags while an animation is mid-flight
-                    if (animPhase == AnimPhase.COMPLETING || animPhase == AnimPhase.SPRINGING_BACK) {
+                    // Ignore new drags while an animation is mid-flight or within commit debounce window
+                    if (animPhase != AnimPhase.IDLE ||
+                        android.os.SystemClock.uptimeMillis() - lastCommitUptimeMs < 150L
+                    ) {
                         return@awaitEachGesture
                     }
 
@@ -425,10 +441,16 @@ fun PageCurlCanvas(
                                     } else {
                                         val consumedBySelectionOrHighlight = latestOnRestingTap(startPos)
                                         if (!consumedBySelectionOrHighlight) {
-                                            when {
-                                                startPos.x >= w * 0.80f -> startTapFlip(forward = true)
-                                                startPos.x <= w * 0.20f -> startTapFlip(forward = latestOneHanded)
-                                                else -> latestOnCenterTap()
+                                            if (latestOneHanded) {
+                                                // One-Handed Tap Mode ON: tapping left or right edge advances cleanly
+                                                when {
+                                                    startPos.x >= w * 0.80f -> startTapFlip(forward = true)
+                                                    startPos.x <= w * 0.20f -> startTapFlip(forward = true)
+                                                    else -> latestOnCenterTap()
+                                                }
+                                            } else {
+                                                // Strict One-Handed Tap Mode OFF: taps NEVER turn pages — only toggle HUD
+                                                latestOnCenterTap()
                                             }
                                         }
                                     }
@@ -820,15 +842,16 @@ private fun drawConicalPageCurl(
     canvas.drawPath(res.peeledPath, res.shadowPaint)
     canvas.restore()
 
-    // --- LAYER 3: Curled Backside of Turning Page (Mirrored 12% Ghosting + Specular Fold Ridge) ---
+    // --- LAYER 3: Curled Backside of Turning Page (Subtle 10-11% Ghosting + Clean Paper Veil + Fold Ridge) ---
     canvas.save()
     canvas.clipPath(res.backPath)
 
-    // 3a. Slightly shaded backside paper base
+    // 3a. Clean opaque backside paper base
     res.backPaperPaint.color = palette.pageBackside.toArgb()
+    res.backPaperPaint.alpha = 255
     canvas.drawPath(res.backPath, res.backPaperPaint)
 
-    // 3b. Back-of-Page Ghosting: exact 2D reflection of frontBmp across fold line L at ~12% opacity
+    // 3b. Back-of-Page Ghosting: exact 2D reflection of frontBmp across fold line L at subtle ~10.5% opacity
     val m00 = 1f - 2f * nx * nx
     val m01 = -2f * nx * ny
     val m02 = 2f * mDotN * nx
@@ -844,9 +867,15 @@ private fun drawConicalPageCurl(
     )
     canvas.save()
     canvas.concat(res.reflectMatrix)
-    res.ghostPaint.alpha = if (isDark) 34 else 31 // ~12% opacity ink bleed-through
+    res.ghostPaint.alpha = if (isDark) 26 else 28 // subtle ~10-11% ink bleed-through
     canvas.drawBitmap(frontBmp, 0f, 0f, res.ghostPaint)
     canvas.restore()
+
+    // Soft paper-tinted backing veil to diffuse reflected dark text cleanly in both Paper & Night modes
+    res.backPaperPaint.color = palette.pageBackside.toArgb()
+    res.backPaperPaint.alpha = if (isDark) 62 else 54
+    canvas.drawPath(res.backPath, res.backPaperPaint)
+    res.backPaperPaint.alpha = 255
 
     // 3c. Cylindrical Shading + Soft Specular Highlight along the curved fold ridge
     // Cylinder width scales with page stiffness (stiffer paper = broader smooth curve)

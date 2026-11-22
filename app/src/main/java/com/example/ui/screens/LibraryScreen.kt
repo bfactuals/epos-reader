@@ -527,16 +527,27 @@ fun LibraryScreen(
                                 .padding(32.dp)
                         )
                     } else {
+                        val gridCols = settings.shelfGridColumns.coerceIn(2, 4)
+                        val hSpace = when (gridCols) {
+                            4 -> 10.dp
+                            3 -> 13.dp
+                            else -> 18.dp
+                        }
+                        val vSpace = when (gridCols) {
+                            4 -> 16.dp
+                            3 -> 20.dp
+                            else -> 24.dp
+                        }
                         LazyVerticalGrid(
-                            columns = GridCells.Fixed(2),
+                            columns = GridCells.Fixed(gridCols),
                             contentPadding = PaddingValues(
                                 start = 20.dp,
                                 end = 20.dp,
                                 top = 18.dp,
                                 bottom = 132.dp
                             ),
-                            horizontalArrangement = Arrangement.spacedBy(18.dp),
-                            verticalArrangement = Arrangement.spacedBy(24.dp),
+                            horizontalArrangement = Arrangement.spacedBy(hSpace),
+                            verticalArrangement = Arrangement.spacedBy(vSpace),
                             modifier = Modifier
                                 .fillMaxSize()
                                 .testTag("library_bookshelf_grid")
@@ -544,6 +555,7 @@ fun LibraryScreen(
                             items(filteredBooks, key = { it.id }) { book ->
                                 BookShelfCard(
                                     book = book,
+                                    gridColumns = gridCols,
                                     onClick = { onOpenBook(book.id) },
                                     onLongClick = { managingBook = book }
                                 )
@@ -641,29 +653,54 @@ fun LibraryScreen(
                     onSkipToLibrary = { viewModel.dismissFirstTimeGreeting() }
                 )
             }
+            // Full-Screen Zero-Trace Private Shelf (replaces bottom drawer; auto-locks on Back or ON_STOP)
+            AnimatedVisibility(
+                visible = isVaultUnlocked,
+                enter = fadeIn(),
+                exit = fadeOut()
+            ) {
+                PrivateShelfScreen(
+                    vaultBooks = vaultBooks,
+                    visibleLibraryBooks = visibleBooks,
+                    gridColumns = settings.shelfGridColumns,
+                    onOpenBook = { bookId -> onOpenBook(bookId) },
+                    onImportToVault = { launchDocumentPicker(intoVault = true) },
+                    onMoveBooksToVault = { ids -> viewModel.moveLibraryBooksToVault(ids) },
+                    onRenameBookClick = { target -> renamingBook = target },
+                    onChangeCoverClick = { target -> coverPickerBook = target },
+                    onRestoreBook = { book -> viewModel.restoreFromVault(book) },
+                    onDeleteBook = { book -> viewModel.deleteBook(book) },
+                    onLockVault = { viewModel.lockVault() }
+                )
+            }
         }
     }
 
-    // 1. Settings & About Sheet (Remote GitHub Config, Update Pill, Theme, Secret Code, Gemini Key)
+    // 1. Settings & About Sheet (Remote GitHub Config, Update Pill, Theme, Grid Size, Verified Secret Code, Full-Page Translate, Gemini Key)
     if (showSettingsAboutSheet) {
         SettingsAndAboutSheet(
             settings = settings,
             remoteConfig = remoteConfig,
             hasSecretCode = hasSecretCode,
             onSelectTheme = { mode -> viewModel.setThemeMode(mode) },
-            onSaveSecretCode = { code -> viewModel.saveSecretShelfCode(code) },
-            onClearSecretCode = { viewModel.clearSecretShelfCode() },
+            onSelectGridColumns = { cols -> viewModel.setShelfGridColumns(cols) },
+            onToggleFullPageTranslate = { enabled -> viewModel.setFullPageTranslateEnabled(enabled) },
+            onCreateSecretCode = { newCode, confirm -> viewModel.createSecretShelfCode(newCode, confirm) },
+            onChangeSecretCode = { current, newCode, confirm -> viewModel.changeSecretShelfCode(current, newCode, confirm) },
+            onRemoveSecretCode = { current -> viewModel.removeSecretShelfCode(current) },
             onSaveGeminiKey = { key -> viewModel.updateGeminiApiKey(key) },
             onDismiss = { showSettingsAboutSheet = false }
         )
     }
 
-    // 2. Dictionary & Language Sheet (14 Languages + Word Bank Shortcut)
+    // 2. Dictionary & Language Sheet (15 Languages including Arabic RTL + 1-Tap Full-Page Translate + Word Bank Shortcut)
     if (showDictionarySheet) {
         DictionaryAndLanguageSheet(
             currentLanguage = settings.defaultTargetLanguage,
+            fullPageTranslateEnabled = settings.fullPageTranslateEnabled,
             wordBankCount = wordBankEntries.size,
             onSelectLanguage = { lang -> viewModel.setDefaultTargetLanguage(lang) },
+            onToggleFullPageTranslate = { enabled -> viewModel.setFullPageTranslateEnabled(enabled) },
             onOpenWordBank = { activeTab = 1 },
             onDismiss = { showDictionarySheet = false }
         )
@@ -677,20 +714,6 @@ fun LibraryScreen(
             settings = settings,
             onUpdateGoal = { target, unit -> viewModel.updateDailyGoal(target, unit) },
             onDismiss = { showHeatmapSheet = false }
-        )
-    }
-
-    // 4. Zero-Trace Private Shelf Sheet (only unlocked via exact Secret Shelf Code in Search)
-    if (isVaultUnlocked) {
-        HiddenVaultSheet(
-            vaultBooks = vaultBooks,
-            visibleLibraryBooks = visibleBooks,
-            onOpenBook = { bookId -> onOpenBook(bookId) },
-            onImportToVault = { launchDocumentPicker(intoVault = true) },
-            onMoveBooksToVault = { ids -> viewModel.moveLibraryBooksToVault(ids) },
-            onRestoreBook = { book -> viewModel.restoreFromVault(book) },
-            onDeleteBook = { book -> viewModel.deleteBook(book) },
-            onLockVault = { viewModel.lockVault() }
         )
     }
 
@@ -1124,13 +1147,17 @@ private fun WordBankTabContent(
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun BookShelfCard(
+internal fun BookShelfCard(
     book: BookEntity,
+    gridColumns: Int = 2,
     onClick: () -> Unit,
     onLongClick: () -> Unit
 ) {
     val palette = LocalFolioPalette.current
     val coverStyle = CuratedCoverStyles[book.coverStyleIndex.coerceIn(0, CuratedCoverStyles.lastIndex)]
+    val isCompact = gridColumns >= 3
+    val isUltraCompact = gridColumns >= 4
+
     val coverBitmap by produceState<ImageBitmap?>(initialValue = null, book.coverImagePath) {
         value = withContext(Dispatchers.IO) {
             book.coverImagePath?.let { path ->
@@ -1178,7 +1205,7 @@ private fun BookShelfCard(
                 Box(
                     modifier = Modifier
                         .fillMaxHeight()
-                        .width(12.dp)
+                        .width(if (isCompact) 8.dp else 12.dp)
                         .background(
                             Brush.horizontalGradient(
                                 listOf(
@@ -1191,16 +1218,21 @@ private fun BookShelfCard(
                 )
             } else {
                 // Curated Procedural Typographic Cloth Cover (0 KB assets)
+                val spineW = when {
+                    isUltraCompact -> 7.dp
+                    isCompact -> 10.dp
+                    else -> 14.dp
+                }
                 Box(modifier = Modifier.fillMaxSize()) {
                     Box(
                         modifier = Modifier
                             .fillMaxHeight()
-                            .width(14.dp)
+                            .width(spineW)
                             .background(coverStyle.spine)
                     )
                     Box(
                         modifier = Modifier
-                            .padding(start = 14.dp)
+                            .padding(start = spineW)
                             .fillMaxHeight()
                             .width(1.dp)
                             .background(Color.White.copy(alpha = 0.14f))
@@ -1221,52 +1253,72 @@ private fun BookShelfCard(
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
-                            .padding(start = 22.dp, top = 12.dp, end = 10.dp, bottom = 12.dp)
+                            .padding(
+                                start = spineW + if (isUltraCompact) 4.dp else 8.dp,
+                                top = if (isUltraCompact) 6.dp else 10.dp,
+                                end = if (isUltraCompact) 5.dp else 9.dp,
+                                bottom = if (isUltraCompact) 6.dp else 10.dp
+                            )
                             .border(
                                 width = 0.75.dp,
                                 color = coverStyle.accent.copy(alpha = 0.35f),
                                 shape = RoundedCornerShape(3.dp)
                             )
-                            .padding(horizontal = 10.dp, vertical = 14.dp)
+                            .padding(
+                                horizontal = if (isUltraCompact) 5.dp else if (isCompact) 7.dp else 10.dp,
+                                vertical = if (isUltraCompact) 6.dp else if (isCompact) 9.dp else 14.dp
+                            )
                     ) {
                         Column(
                             modifier = Modifier.fillMaxSize(),
                             verticalArrangement = Arrangement.SpaceBetween
                         ) {
                             Column {
-                                Spacer(modifier = Modifier.height(14.dp))
+                                Spacer(modifier = Modifier.height(if (isUltraCompact) 4.dp else if (isCompact) 8.dp else 14.dp))
                                 Text(
                                     text = book.title,
                                     style = MaterialTheme.typography.titleLarge.copy(
                                         fontFamily = FontFamily.Serif,
                                         fontWeight = FontWeight.Normal,
-                                        fontSize = 15.5.sp,
-                                        lineHeight = 20.sp
+                                        fontSize = when {
+                                            isUltraCompact -> 10.sp
+                                            isCompact -> 12.sp
+                                            else -> 15.5.sp
+                                        },
+                                        lineHeight = when {
+                                            isUltraCompact -> 12.5.sp
+                                            isCompact -> 15.sp
+                                            else -> 20.sp
+                                        }
                                     ),
                                     color = coverStyle.text,
-                                    maxLines = 4,
+                                    maxLines = if (isUltraCompact) 3 else 4,
                                     overflow = TextOverflow.Ellipsis
                                 )
-                                Spacer(modifier = Modifier.height(8.dp))
-                                Box(
-                                    modifier = Modifier
-                                        .width(24.dp)
-                                        .height(1.dp)
-                                        .background(coverStyle.accent.copy(alpha = 0.75f))
-                                )
+                                if (!isUltraCompact) {
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                    Box(
+                                        modifier = Modifier
+                                            .width(if (isCompact) 16.dp else 24.dp)
+                                            .height(1.dp)
+                                            .background(coverStyle.accent.copy(alpha = 0.75f))
+                                    )
+                                }
                             }
 
-                            Text(
-                                text = book.author,
-                                style = MaterialTheme.typography.labelMedium.copy(
-                                    fontFamily = FontFamily.Serif,
-                                    fontStyle = FontStyle.Italic,
-                                    fontSize = 11.sp
-                                ),
-                                color = coverStyle.text.copy(alpha = 0.74f),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
+                            if (!isUltraCompact) {
+                                Text(
+                                    text = book.author,
+                                    style = MaterialTheme.typography.labelMedium.copy(
+                                        fontFamily = FontFamily.Serif,
+                                        fontStyle = FontStyle.Italic,
+                                        fontSize = if (isCompact) 9.5.sp else 11.sp
+                                    ),
+                                    color = coverStyle.text.copy(alpha = 0.74f),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
                         }
                     }
                 }
@@ -1278,17 +1330,20 @@ private fun BookShelfCard(
                 color = Color(0xCC181715),
                 modifier = Modifier
                     .align(Alignment.TopEnd)
-                    .padding(8.dp)
+                    .padding(if (isUltraCompact) 4.dp else 7.dp)
             ) {
                 Text(
                     text = book.bookFormat.badge,
                     style = MaterialTheme.typography.labelSmall.copy(
-                        fontSize = 9.sp,
+                        fontSize = if (isUltraCompact) 7.5.sp else 9.sp,
                         fontWeight = FontWeight.SemiBold,
-                        letterSpacing = 0.8.sp
+                        letterSpacing = 0.6.sp
                     ),
                     color = Color(0xFFF3EFE6),
-                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.5.dp)
+                    modifier = Modifier.padding(
+                        horizontal = if (isUltraCompact) 4.dp else 6.dp,
+                        vertical = if (isUltraCompact) 1.5.dp else 2.5.dp
+                    )
                 )
             }
 
@@ -1297,8 +1352,8 @@ private fun BookShelfCard(
                 Box(
                     modifier = Modifier
                         .align(Alignment.BottomEnd)
-                        .padding(8.dp)
-                        .size(22.dp)
+                        .padding(if (isUltraCompact) 4.dp else 7.dp)
+                        .size(if (isUltraCompact) 18.dp else 22.dp)
                         .clip(CircleShape)
                         .background(Color(0xCC181715)),
                     contentAlignment = Alignment.Center
@@ -1307,39 +1362,51 @@ private fun BookShelfCard(
                         imageVector = FolioIcons.StarFilled,
                         contentDescription = "Favorite",
                         tint = Color(0xFFD9AE5F),
-                        modifier = Modifier.size(13.dp)
+                        modifier = Modifier.size(if (isUltraCompact) 11.dp else 13.dp)
                     )
                 }
             }
         }
 
-        Spacer(modifier = Modifier.height(10.dp))
+        Spacer(modifier = Modifier.height(if (isUltraCompact) 6.dp else 9.dp))
 
         Text(
             text = book.title,
-            style = MaterialTheme.typography.titleMedium.copy(
-                fontFamily = FontFamily.Serif,
-                fontWeight = FontWeight.Medium
-            ),
+            style = if (isCompact) {
+                MaterialTheme.typography.labelLarge.copy(
+                    fontFamily = FontFamily.Serif,
+                    fontWeight = FontWeight.Medium,
+                    fontSize = if (isUltraCompact) 11.5.sp else 13.sp
+                )
+            } else {
+                MaterialTheme.typography.titleMedium.copy(
+                    fontFamily = FontFamily.Serif,
+                    fontWeight = FontWeight.Medium
+                )
+            },
             color = palette.text,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
         )
-        Spacer(modifier = Modifier.height(2.dp))
-        Text(
-            text = book.author,
-            style = MaterialTheme.typography.bodySmall,
-            color = palette.textMuted,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
+        if (!isUltraCompact) {
+            Spacer(modifier = Modifier.height(2.dp))
+            Text(
+                text = book.author,
+                style = MaterialTheme.typography.bodySmall.copy(
+                    fontSize = if (isCompact) 10.5.sp else 12.sp
+                ),
+                color = palette.textMuted,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
 
-        Spacer(modifier = Modifier.height(7.dp))
+        Spacer(modifier = Modifier.height(if (isUltraCompact) 4.dp else 7.dp))
 
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             Box(
                 modifier = Modifier
@@ -1359,7 +1426,9 @@ private fun BookShelfCard(
             }
             Text(
                 text = if (progressPct == 0) "New" else "$progressPct%",
-                style = MaterialTheme.typography.labelSmall,
+                style = MaterialTheme.typography.labelSmall.copy(
+                    fontSize = if (isUltraCompact) 9.5.sp else 11.sp
+                ),
                 color = palette.textMuted
             )
         }

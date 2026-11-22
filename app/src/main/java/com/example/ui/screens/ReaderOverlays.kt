@@ -79,6 +79,7 @@ import com.example.ui.theme.ReaderFontStyle
 import com.example.ui.theme.ReaderThemeMode
 import com.example.ui.theme.SepiaBg
 import com.example.ui.viewmodel.ActiveTextSelection
+import com.example.ui.viewmodel.ReadingSessionTimerState
 import kotlin.math.roundToInt
 
 /**
@@ -91,7 +92,11 @@ fun ReaderTopBar(
     chapterSubtitle: String,
     isBookmarked: Boolean,
     isPinned: Boolean,
+    isSessionTimerActive: Boolean,
+    showFullPageTranslateAction: Boolean,
     onBack: () -> Unit,
+    onOpenSessionTimer: () -> Unit,
+    onTranslateFullPage: () -> Unit,
     onTogglePin: () -> Unit,
     onOpenSearch: () -> Unit,
     onOpenNotebook: () -> Unit,
@@ -155,6 +160,36 @@ fun ReaderTopBar(
                             overflow = TextOverflow.Ellipsis
                         )
                     }
+                }
+
+                if (showFullPageTranslateAction) {
+                    IconButton(
+                        onClick = onTranslateFullPage,
+                        modifier = Modifier
+                            .size(44.dp)
+                            .testTag("reader_topbar_translate_page_button")
+                    ) {
+                        Icon(
+                            imageVector = FolioIcons.Translate,
+                            contentDescription = "Translate current page",
+                            tint = palette.accent,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                }
+
+                IconButton(
+                    onClick = onOpenSessionTimer,
+                    modifier = Modifier
+                        .size(44.dp)
+                        .testTag("reader_timer_button")
+                ) {
+                    Icon(
+                        imageVector = FolioIcons.Timer,
+                        contentDescription = "Reading session timer",
+                        tint = if (isSessionTimerActive) palette.accent else palette.text,
+                        modifier = Modifier.size(20.dp)
+                    )
                 }
 
                 IconButton(
@@ -232,10 +267,15 @@ fun ReaderBottomSheetBar(
     settings: ReaderSettings,
     isTtsPlaying: Boolean,
     sleepTimerRemainingSec: Int,
+    sessionTimer: ReadingSessionTimerState,
     chapterTitleForPage: (Int) -> String,
     onScrubCommit: (Int) -> Unit,
+    onOpenGoToPage: () -> Unit,
+    onOpenSessionTimer: () -> Unit,
     onSetExpanded: (Boolean) -> Unit,
     onUpdateSettings: ((ReaderSettings) -> ReaderSettings) -> Unit,
+    onSetUseSystemBrightness: (Boolean) -> Unit,
+    onSetCustomBrightness: (Float) -> Unit,
     onToggleTts: () -> Unit,
     onSetTtsSpeed: (Float) -> Unit,
     onSetSleepTimerMinutes: (Int) -> Unit,
@@ -344,18 +384,12 @@ fun ReaderBottomSheetBar(
                         )
                     }
 
-                    // Fast Page-Scrubber Row (INTACT)
+                    // Fast Page-Scrubber Row + Tappable "X / Y" Go-to-Page Pill
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Text(
-                            text = "${previewPage + 1}",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = palette.textMuted,
-                            modifier = Modifier.width(28.dp)
-                        )
                         Slider(
                             value = if (isScrubbing) scrubValue else currentPage.toFloat(),
                             onValueChange = { v ->
@@ -378,12 +412,24 @@ fun ReaderBottomSheetBar(
                                 .weight(1f)
                                 .testTag("reader_page_scrubber")
                         )
-                        Text(
-                            text = "$totalPages",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = palette.textMuted,
-                            modifier = Modifier.width(28.dp)
-                        )
+
+                        Surface(
+                            onClick = onOpenGoToPage,
+                            shape = RoundedCornerShape(10.dp),
+                            color = palette.background.copy(alpha = 0.65f),
+                            border = BorderStroke(0.75.dp, palette.divider),
+                            modifier = Modifier.testTag("reader_go_to_page_trigger")
+                        ) {
+                            Text(
+                                text = "${previewPage + 1} / $totalPages",
+                                style = MaterialTheme.typography.labelMedium.copy(
+                                    fontWeight = FontWeight.SemiBold
+                                ),
+                                color = palette.text,
+                                maxLines = 1,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp)
+                            )
+                        }
                     }
 
                     // Expandable Reading Settings Panel: [Appearance | Tools]
@@ -435,7 +481,11 @@ fun ReaderBottomSheetBar(
                                     settings = settings,
                                     isTtsPlaying = isTtsPlaying,
                                     sleepTimerRemainingSec = sleepTimerRemainingSec,
+                                    sessionTimer = sessionTimer,
                                     onUpdateSettings = onUpdateSettings,
+                                    onSetUseSystemBrightness = onSetUseSystemBrightness,
+                                    onSetCustomBrightness = onSetCustomBrightness,
+                                    onOpenSessionTimer = onOpenSessionTimer,
                                     onToggleTts = onToggleTts,
                                     onSetTtsSpeed = onSetTtsSpeed,
                                     onSetSleepTimerMinutes = onSetSleepTimerMinutes,
@@ -600,7 +650,11 @@ private fun ToolsSettingsContent(
     settings: ReaderSettings,
     isTtsPlaying: Boolean,
     sleepTimerRemainingSec: Int,
+    sessionTimer: ReadingSessionTimerState,
     onUpdateSettings: ((ReaderSettings) -> ReaderSettings) -> Unit,
+    onSetUseSystemBrightness: (Boolean) -> Unit,
+    onSetCustomBrightness: (Float) -> Unit,
+    onOpenSessionTimer: () -> Unit,
     onToggleTts: () -> Unit,
     onSetTtsSpeed: (Float) -> Unit,
     onSetSleepTimerMinutes: (Int) -> Unit,
@@ -608,7 +662,69 @@ private fun ToolsSettingsContent(
 ) {
     val palette = LocalFolioPalette.current
 
-    // 1. Warmth / Blue-Light Filter + Brightness
+    // 1a. Brightness Slider + "Use System" Toggle (directly ABOVE Warmth)
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Icon(
+                imageVector = FolioIcons.LightMode,
+                contentDescription = null,
+                tint = palette.accent,
+                modifier = Modifier.size(16.dp)
+            )
+            Text(
+                text = "Brightness",
+                style = MaterialTheme.typography.labelLarge,
+                color = palette.text
+            )
+            Text(
+                text = if (settings.useSystemBrightness) "System" else "${(settings.brightnessLevel * 100f).roundToInt()}%",
+                style = MaterialTheme.typography.labelMedium,
+                color = palette.textMuted
+            )
+        }
+        Surface(
+            onClick = { onSetUseSystemBrightness(!settings.useSystemBrightness) },
+            shape = RoundedCornerShape(10.dp),
+            color = if (settings.useSystemBrightness) palette.accent else palette.background.copy(alpha = 0.65f),
+            border = BorderStroke(
+                0.75.dp,
+                if (settings.useSystemBrightness) palette.accent else palette.divider
+            ),
+            modifier = Modifier.testTag("tool_use_system_brightness_toggle")
+        ) {
+            Text(
+                text = "Use System",
+                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                color = if (settings.useSystemBrightness) palette.background else palette.text,
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+            )
+        }
+    }
+    Slider(
+        value = settings.brightnessLevel.coerceIn(0.05f, 1.0f),
+        onValueChange = { level -> onSetCustomBrightness(level) },
+        valueRange = 0.05f..1.0f,
+        colors = SliderDefaults.colors(
+            thumbColor = if (settings.useSystemBrightness) palette.textMuted else palette.accent,
+            activeTrackColor = if (settings.useSystemBrightness) palette.textMuted.copy(alpha = 0.55f) else palette.accent,
+            inactiveTrackColor = palette.divider
+        ),
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(34.dp)
+            .testTag("tool_brightness_slider")
+    )
+
+    Spacer(modifier = Modifier.height(4.dp))
+
+    // 1b. Warmth / Blue-Light Filter
     CompactSliderRow(
         label = "Warmth",
         valueText = "${(settings.warmthFilter / 0.65f * 100f).roundToInt()}%",
@@ -616,6 +732,66 @@ private fun ToolsSettingsContent(
         range = 0f..0.65f,
         onValueChange = { v -> onUpdateSettings { it.copy(warmthFilter = v) } }
     )
+
+    Spacer(modifier = Modifier.height(8.dp))
+
+    // 1c. Reading Session Timer quick launcher
+    Surface(
+        onClick = onOpenSessionTimer,
+        shape = RoundedCornerShape(12.dp),
+        color = palette.background.copy(alpha = 0.65f),
+        border = BorderStroke(
+            0.75.dp,
+            if (sessionTimer.isActivePillVisible) palette.accent else palette.divider
+        ),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("tool_session_timer_row")
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Icon(
+                    imageVector = FolioIcons.Timer,
+                    contentDescription = null,
+                    tint = palette.accent,
+                    modifier = Modifier.size(18.dp)
+                )
+                Column {
+                    Text(
+                        text = "Reading Session Timer",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = palette.text
+                    )
+                    Text(
+                        text = if (sessionTimer.isActivePillVisible) {
+                            val m = sessionTimer.remainingSeconds / 60
+                            val s = sessionTimer.remainingSeconds % 60
+                            val stateLbl = if (sessionTimer.isPaused) "Paused" else "Running"
+                            String.format("%s · %02d:%02d remaining", stateLbl, m, s)
+                        } else {
+                            "Set a focused reading session with chime"
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = palette.textMuted
+                    )
+                }
+            }
+            Text(
+                text = if (sessionTimer.isActivePillVisible) "Manage" else "Set",
+                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                color = palette.accent
+            )
+        }
+    }
 
     Spacer(modifier = Modifier.height(8.dp))
 
@@ -646,7 +822,7 @@ private fun ToolsSettingsContent(
     }
     ToolSwitchRow(
         label = "One-Handed Tap Mode",
-        subtitle = "Left or right tap advances; swipe goes back",
+        subtitle = "On: tap edges to turn · Off: swipe only (tap toggles controls)",
         checked = settings.oneHandedTapMode,
         onCheckedChange = { on -> onUpdateSettings { it.copy(oneHandedTapMode = on) } },
         testTag = "tool_one_handed_switch"
